@@ -408,17 +408,24 @@ export default function App() {
                   <span>🤖 Method 2: Download Native Android APK</span>
                 </div>
                 <p className="text-slate-300 leading-relaxed">
-                  The native Android Gradle project & GitHub Actions APK builder are ready in this repository.
-                  To trigger the automatic APK build, reply with your <strong>GitHub username</strong> and I can push the code to your GitHub repo <code>dama</code>, or download the full ZIP to upload to GitHub:
+                  The native Android APK was successfully built by GitHub Actions and is ready to install!
                 </p>
-                <div className="pt-1.5">
+                <div className="pt-2 flex flex-wrap gap-2">
                   <a
-                    href="/dama-project.zip"
-                    download="dama-project.zip"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-500/40 rounded-lg text-xs font-semibold transition-colors"
+                    href="/dama-master-debug.apk"
+                    download="dama-master-debug.apk"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-lg text-xs shadow-md transition-all"
                   >
-                    <Download className="w-3.5 h-3.5 text-sky-300" />
-                    <span>Download Complete Project ZIP (Android + Actions)</span>
+                    <Download className="w-4 h-4 text-slate-950" />
+                    <span>Download Android APK (4.5 MB)</span>
+                  </a>
+                  <a
+                    href="https://github.com/marouanehatri-cmd/Dama/actions/runs/41708387509"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <span>View GitHub Build Run</span>
                   </a>
                 </div>
               </div>

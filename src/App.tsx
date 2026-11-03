@@ -38,6 +38,7 @@ import {
   posToNotation,
   notationToPos,
   getAllMoves,
+  getAllCaptures,
   findMaxCaptureLength,
   solvePosition,
   countTotalPossibilities,
@@ -75,9 +76,22 @@ export default function App() {
   // Modals & Drawers
   const [showRulesModal, setShowRulesModal] = useState<boolean>(false);
   const [showPhoneModal, setShowPhoneModal] = useState<boolean>(false);
+  const [showNewGameModal, setShowNewGameModal] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
 
+  // Mandatory Capture Override (null = variant default): forced "must take" or optional "can ignore"
+  const [mandatoryCaptureEnabled, setMandatoryCaptureEnabled] = useState<boolean | null>(null);
+
+  // Pending punishment ("huff"): opponent ignored an available capture
+  const [pendingHuff, setPendingHuff] = useState<{ pieces: Position[]; mover: 1 | -1 } | null>(null);
+
   const activeVariant: VariantRules = VARIANTS[variantKey] || VARIANTS.moroccan;
+
+  // Effective rules with the user's mandatory-capture preference applied
+  const activeRules: VariantRules = useMemo(
+    () => ({ ...activeVariant, mandatoryCapture: mandatoryCaptureEnabled ?? activeVariant.mandatoryCapture }),
+    [activeVariant, mandatoryCaptureEnabled]
+  );
 
   // Sound effects via Web Audio API (optional, unobtrusive pleasant clicks)
   const playSound = useCallback((type: 'move' | 'capture' | 'win') => {
@@ -126,11 +140,11 @@ export default function App() {
     setIsEngineThinking(true);
     // Use requestAnimationFrame / timeout to keep UI snappy
     setTimeout(() => {
-      const result = solvePosition(board, turn, depth, activeVariant);
+      const result = solvePosition(board, turn, depth, activeRules);
       setSolverResult(result);
       setIsEngineThinking(false);
     }, 10);
-  }, [board, turn, depth, activeVariant]);
+  }, [board, turn, depth, activeRules]);
 
   useEffect(() => {
     runSolver();
@@ -138,23 +152,23 @@ export default function App() {
 
   // Handle Play vs Engine responses
   useEffect(() => {
-    if (playVsEngine && turn !== humanColor && !isEngineThinking && solverResult?.bestMove) {
+    if (playVsEngine && turn !== humanColor && !isEngineThinking && solverResult?.bestMove && !pendingHuff) {
       const timer = setTimeout(() => {
         applyMove(solverResult.bestMove!);
       }, 400);
       return () => clearTimeout(timer);
     }
-  }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult]);
+      }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, pendingHuff]);
 
   // Legal moves available for current player
   const legalMoves = useMemo(() => {
-    return solverResult?.allLegalMoves || getAllMoves(board, turn, activeVariant);
-  }, [solverResult, board, turn, activeVariant]);
+    return solverResult?.allLegalMoves || getAllMoves(board, turn, activeRules);
+  }, [solverResult, board, turn, activeRules]);
 
   // Max capture length currently available
   const maxCaptureCount = useMemo(() => {
-    return findMaxCaptureLength(board, turn, activeVariant);
-  }, [board, turn, activeVariant]);
+    return findMaxCaptureLength(board, turn, activeRules);
+  }, [board, turn, activeRules]);
 
   // Legal moves for the currently selected piece
   const legalMovesForSelected = useMemo(() => {
@@ -180,13 +194,36 @@ export default function App() {
       }
 
       // Check win condition
-      const nextMoves = getAllMoves(move.finalBoard, turn === 1 ? -1 : 1, activeVariant);
+      const nextMoves = getAllMoves(move.finalBoard, turn === 1 ? -1 : 1, activeRules);
       if (nextMoves.length === 0) {
         playSound('win');
         showToast(turn === 1 ? '🎉 White wins!' : '🎉 Black wins!');
       }
+
+      // Detect an ignored capture (only relevant when mandatory capture is optional):
+      // the mover had captures available but played a non-capturing move.
+      if (move.captured.length === 0 && findMaxCaptureLength(board, turn, activeRules) > 0) {
+        const offenders: Position[] = [];
+        for (let r = 0; r < 8; r++) {
+          for (let c = 0; c < 8; c++) {
+            if (Math.sign(board[r][c]) === turn) {
+              if (getAllCaptures(board, r, c, turn, activeRules).length > 0) {
+                // If the offending piece is the one that moved, track its new square
+                if (r === move.from.r && c === move.from.c) {
+                  offenders.push({ r: move.to.r, c: move.to.c });
+                } else {
+                  offenders.push({ r, c });
+                }
+              }
+            }
+          }
+        }
+        if (offenders.length > 0) {
+          setPendingHuff({ pieces: offenders, mover: turn });
+        }
+      }
     },
-    [board, turn, activeVariant, playSound, showToast]
+    [board, turn, activeRules, playSound, showToast]
   );
 
   // Undo move
@@ -288,6 +325,59 @@ export default function App() {
     setDraggedPos(null);
   };
 
+  // Start a fresh game. vsEngine=true activates Play vs Engine mode with the chosen human color.
+  const startNewGame = useCallback(
+    (vsEngine: boolean, color: 1 | -1 = 1) => {
+      setBoard(createStartingBoard());
+      setTurn(1);
+      setSelectedPos(null);
+      setHoveredMove(null);
+      setLastMoveMade(null);
+      setHistory([]);
+      setFuture([]);
+      setPendingHuff(null);
+      setSolverResult(null);
+      if (vsEngine) {
+        setPlayVsEngine(true);
+        setHumanColor(color);
+        setIsFlipped(color === -1);
+        showToast(color === 1 ? '🎮 New game vs Engine — you play White!' : '🎮 New game vs Engine — you play Black!');
+      } else {
+        setPlayVsEngine(false);
+        showToast('🎮 New game — two players on this board');
+      }
+    },
+    [showToast]
+  );
+
+  // Punishment decision: remove the piece(s) that ignored an available capture
+  const handleHuffRemove = useCallback(() => {
+    if (!pendingHuff) return;
+    setHistory(prev => [...prev, { board: cloneBoard(board), turn }]);
+    setFuture([]);
+    const newBoard = cloneBoard(board);
+    for (const p of pendingHuff.pieces) {
+      newBoard[p.r][p.c] = 0;
+    }
+    setBoard(newBoard);
+    setPendingHuff(null);
+    playSound('capture');
+    showToast('⚠️ Punishment: piece that refused to capture was removed!');
+
+    // Check if removal ended the game
+    const nextMoves = getAllMoves(newBoard, turn, activeRules);
+    if (nextMoves.length === 0) {
+      playSound('win');
+      showToast(turn === 1 ? '🎉 White wins!' : '🎉 Black wins!');
+    }
+  }, [pendingHuff, board, turn, activeRules, playSound, showToast]);
+
+  // Punishment decision: let the ignored capture slide
+  const handleHuffIgnore = useCallback(() => {
+    setPendingHuff(null);
+    showToast('Capture ignored — the move stands');
+  }, [showToast]);
+
   // Export Standalone HTML
   const handleExportHtml = () => {
     const htmlContent = generateSingleHtml();
@@ -325,6 +415,114 @@ export default function App() {
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-slate-950 font-semibold px-4 py-2 rounded-lg shadow-xl text-xs flex items-center gap-2 animate-bounce">
           <Zap className="w-4 h-4" />
           {notification}
+        </div>
+      )}
+
+      {/* Punishment Decision Modal: opponent ignored an available capture */}
+      {pendingHuff && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#161a22] border border-rose-800/60 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center">
+                <HelpCircle className="w-6 h-6 text-rose-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-100">Ignored Capture!</h3>
+                <p className="text-xs text-slate-400">
+                  {pendingHuff.mover === 1 ? 'White' : 'Black'} had a capture available
+                  {activeRules.mandatoryCapture ? ' (mandatory!)' : ''} but played a non-capturing move.
+                </p>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-300 bg-slate-800/50 rounded-lg p-3 border border-slate-700/50">
+              <span className="text-slate-400">Offending piece{pendingHuff.pieces.length > 1 ? 's' : ''}:</span>{' '}
+              <span className="font-mono font-bold text-rose-300">
+                {pendingHuff.pieces.map(p => posToNotation(p.r, p.c)).join(', ')}
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              You decide the punishment: remove the piece that should have captured, or let the move stand.
+            </p>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={handleHuffRemove}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white text-sm font-bold shadow-lg transition-colors flex items-center justify-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                Remove Piece{pendingHuff.pieces.length > 1 ? 's' : ''}
+              </button>
+              <button
+                onClick={handleHuffIgnore}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold border border-slate-700 transition-colors flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Let It Slide
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Game vs Engine Modal */}
+      {showNewGameModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#161a22] border border-emerald-900/60 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
+                  <Play className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-100">New Game vs Engine</h3>
+                  <p className="text-xs text-slate-400">Standard starting position · choose your color</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowNewGameModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-md"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  startNewGame(true, 1);
+                  setShowNewGameModal(false);
+                }}
+                className="p-4 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-2 transition-colors"
+              >
+                <div className="w-9 h-9 rounded-full bg-amber-100 border-2 border-amber-300" />
+                <span className="text-sm font-bold text-slate-200">Play as White</span>
+                <span className="text-[10px] text-slate-500">You move first</span>
+              </button>
+              <button
+                onClick={() => {
+                  startNewGame(true, -1);
+                  setShowNewGameModal(false);
+                }}
+                className="p-4 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-2 transition-colors"
+              >
+                <div className="w-9 h-9 rounded-full bg-slate-900 border-2 border-slate-600" />
+                <span className="text-sm font-bold text-slate-200">Play as Black</span>
+                <span className="text-[10px] text-slate-500">Engine moves first</span>
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                startNewGame(false);
+                setShowNewGameModal(false);
+              }}
+              className="w-full px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold border border-slate-700 transition-colors"
+            >
+              Or start a 2-player game instead
+            </button>
+          </div>
         </div>
       )}
 
@@ -475,6 +673,22 @@ export default function App() {
           {/* Quick Header Actions */}
           <div className="flex flex-wrap items-center gap-2">
             <button
+              onClick={() => setShowNewGameModal(true)}
+              className="px-3 py-1.5 text-xs font-bold rounded-lg bg-gradient-to-r from-emerald-500/25 to-emerald-600/30 hover:from-emerald-500/40 hover:to-emerald-600/50 text-emerald-300 border border-emerald-500/50 flex items-center gap-1.5 transition-colors shadow-sm"
+              title="Start a fresh game against the engine"
+            >
+              <Play className="w-3.5 h-3.5 text-emerald-400" />
+              <span>New Game vs Engine</span>
+            </button>
+            <button
+              onClick={() => startNewGame(false)}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-sky-500/20 to-sky-600/25 hover:from-sky-500/30 hover:to-sky-600/40 text-sky-300 border border-sky-500/40 flex items-center gap-1.5 transition-colors shadow-sm"
+              title="Reset to the standard starting position (two players)"
+            >
+              <Zap className="w-3.5 h-3.5 text-sky-400" />
+              <span>New Game (2 Players)</span>
+            </button>
+            <button
               onClick={() => setShowPhoneModal(true)}
               className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-amber-500/20 to-amber-600/30 hover:from-amber-500/30 hover:to-amber-600/40 text-amber-300 border border-amber-500/40 flex items-center gap-1.5 transition-colors shadow-sm"
               title="Install or play on phone"
@@ -526,6 +740,8 @@ export default function App() {
                   setHoveredMove(null);
                   setHistory([]);
                   setFuture([]);
+                  setPendingHuff(null);
+                  setPlayVsEngine(false);
                   showToast(`Loaded: ${preset.name}`);
                 }}
                 className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
@@ -934,6 +1150,27 @@ export default function App() {
                   {playVsEngine ? 'Engine Active' : 'Off'}
                 </button>
               </div>
+
+              {/* Mandatory Capture Toggle: forced "must take" vs optional "can ignore" */}
+              <div className="pt-1 flex items-center justify-between text-xs border-t border-slate-800/80">
+                <span className="text-slate-300 font-medium">
+                  Mandatory Capture
+                  <span className="block text-[10px] text-slate-500 font-normal">
+                    {activeRules.mandatoryCapture ? 'Must take — captures are forced' : 'Optional — a piece may ignore a capture'}
+                  </span>
+                </span>
+                <button
+                  onClick={() => setMandatoryCaptureEnabled(!activeRules.mandatoryCapture)}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold border transition-all ${
+                    activeRules.mandatoryCapture
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                  title="Choose whether players are forced to capture or may ignore it"
+                >
+                  {activeRules.mandatoryCapture ? 'Must Take' : 'Can Ignore'}
+                </button>
+              </div>
             </div>
 
             {/* Analysis & Evaluation Overview Card */}
@@ -1127,3 +1364,4 @@ export default function App() {
     </div>
   );
 }
+

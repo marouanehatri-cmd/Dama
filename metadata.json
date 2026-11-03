@@ -1,0 +1,6 @@
+{
+  "name": "Dama Master - Universal Checkers Solver",
+  "description": "Moroccan Dama and universal checkers solver with 100% accurate Moroccan rules, mandatory max capture enforcement, flying kings, minimax analysis, and custom position setup.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

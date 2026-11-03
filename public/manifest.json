@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "Dama Master - Moroccan Dama Solver",
+  "short_name": "Dama Master",
+  "description": "Authentic Moroccan Dama and universal checkers solver with full rules, flying kings, and minimax AI.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d0f14",
+  "theme_color": "#0d0f14",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

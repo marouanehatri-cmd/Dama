@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#451a03" />
+      <stop offset="70%" stop-color="#1e0b04" />
+      <stop offset="100%" stop-color="#0d0f14" />
+    </radialGradient>
+    <radialGradient id="piece" cx="35%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#fffbeb" />
+      <stop offset="60%" stop-color="#d97706" />
+      <stop offset="100%" stop-color="#78350f" />
+    </radialGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background square for maskable icon safe-zone -->
+  <rect width="512" height="512" fill="url(#bg)" rx="100" />
+
+  <!-- Outer wooden board ring -->
+  <circle cx="256" cy="256" r="210" fill="none" stroke="#78350f" stroke-width="8" opacity="0.6" />
+
+  <!-- Checkers Piece Token -->
+  <circle cx="256" cy="256" r="180" fill="url(#piece)" filter="drop-shadow(0 15px 25px rgba(0,0,0,0.7))" />
+  <circle cx="256" cy="256" r="145" fill="none" stroke="#fef3c7" stroke-width="6" opacity="0.5" />
+  <circle cx="256" cy="256" r="115" fill="none" stroke="#78350f" stroke-width="4" opacity="0.4" />
+
+  <!-- Royal Crown (Dama / Sultan) -->
+  <path d="M 170 310 L 190 220 L 230 260 L 256 195 L 282 260 L 322 220 L 342 310 Z" fill="url(#gold)" filter="drop-shadow(0 6px 12px rgba(0,0,0,0.5))" />
+  <!-- Crown Base Band -->
+  <rect x="170" y="316" width="172" height="18" rx="6" fill="#fef08a" />
+  <!-- Jewels on crown tips -->
+  <circle cx="190" cy="216" r="9" fill="#fef08a" />
+  <circle cx="256" cy="191" r="11" fill="#fef08a" />
+  <circle cx="322" cy="216" r="9" fill="#fef08a" />
+</svg>

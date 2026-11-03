@@ -24,6 +24,7 @@ import {
   Sliders,
   ChevronRight,
   RefreshCw,
+  Smartphone,
 } from 'lucide-react';
 import { Board, Move, Position, SolverResult, VariantRules } from './engine/types.ts';
 import {
@@ -73,6 +74,7 @@ export default function App() {
 
   // Modals & Drawers
   const [showRulesModal, setShowRulesModal] = useState<boolean>(false);
+  const [showPhoneModal, setShowPhoneModal] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
 
   const activeVariant: VariantRules = VARIANTS[variantKey] || VARIANTS.moroccan;
@@ -375,6 +377,64 @@ export default function App() {
         </div>
       )}
 
+      {/* Phone & APK Install Modal */}
+      {showPhoneModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#161a22] border border-amber-900/60 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative text-sm space-y-4 max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setShowPhoneModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-md"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2.5 text-amber-400 font-serif text-lg font-bold">
+              <Smartphone className="w-5 h-5 text-amber-400" />
+              <span>Playing & Installing on Phone</span>
+            </div>
+
+            <div className="space-y-3.5 text-xs text-slate-300">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-1">
+                <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                  <span>📱 Method 1: Instant Install (No APK Needed)</span>
+                </div>
+                <p className="text-slate-300 leading-relaxed">
+                  Open this app in Chrome / Samsung Internet on your phone, tap the <strong>3 dots (⋮)</strong> menu, and select <strong>&quot;Install app&quot;</strong> or <strong>&quot;Add to Home Screen&quot;</strong>.
+                  It installs instantly as a full-screen app with the royal Moroccan Dama icon!
+                </p>
+              </div>
+
+              <div className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl space-y-1">
+                <div className="font-bold text-sky-300 flex items-center gap-1.5">
+                  <span>🤖 Method 2: Download Native Android APK</span>
+                </div>
+                <p className="text-slate-300 leading-relaxed">
+                  The native Android Gradle project & GitHub Actions APK builder are ready in this repository.
+                  To trigger the automatic APK build, reply with your <strong>GitHub username</strong> and I can push the code to your GitHub repo <code>dama</code>, or push from your phone via GitHub Web.
+                </p>
+              </div>
+
+              <div className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl space-y-1">
+                <div className="font-bold text-emerald-300 flex items-center gap-1.5">
+                  <span>💾 Method 3: Offline Single File</span>
+                </div>
+                <p className="text-slate-300 leading-relaxed">
+                  Tap <strong>&quot;Export Single HTML&quot;</strong> to save the complete self-contained game file onto your phone. You can open and play it offline in any mobile browser anytime without internet!
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setShowPhoneModal(false)}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg text-xs"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Container */}
       <div className="max-w-7xl mx-auto px-4 py-6 md:px-8 space-y-6">
         {/* Top Header Bar */}
@@ -397,6 +457,14 @@ export default function App() {
 
           {/* Quick Header Actions */}
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setShowPhoneModal(true)}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-amber-500/20 to-amber-600/30 hover:from-amber-500/30 hover:to-amber-600/40 text-amber-300 border border-amber-500/40 flex items-center gap-1.5 transition-colors shadow-sm"
+              title="Install or play on phone"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-amber-400" />
+              <span>Phone / APK Guide</span>
+            </button>
             <button
               onClick={() => setShowRulesModal(true)}
               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"

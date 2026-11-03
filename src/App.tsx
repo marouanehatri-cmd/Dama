@@ -409,8 +409,18 @@ export default function App() {
                 </div>
                 <p className="text-slate-300 leading-relaxed">
                   The native Android Gradle project & GitHub Actions APK builder are ready in this repository.
-                  To trigger the automatic APK build, reply with your <strong>GitHub username</strong> and I can push the code to your GitHub repo <code>dama</code>, or push from your phone via GitHub Web.
+                  To trigger the automatic APK build, reply with your <strong>GitHub username</strong> and I can push the code to your GitHub repo <code>dama</code>, or download the full ZIP to upload to GitHub:
                 </p>
+                <div className="pt-1.5">
+                  <a
+                    href="/dama-project.zip"
+                    download="dama-project.zip"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-500/40 rounded-lg text-xs font-semibold transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5 text-sky-300" />
+                    <span>Download Complete Project ZIP (Android + Actions)</span>
+                  </a>
+                </div>
               </div>
 
               <div className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl space-y-1">

@@ -50,7 +50,7 @@ export default function App() {
   const [board, setBoard] = useState<Board>(createTestPosition);
   const [turn, setTurn] = useState<1 | -1>(1); // 1 = White, -1 = Black
   const [variantKey, setVariantKey] = useState<string>('moroccan');
-  const [depth, setDepth] = useState<number>(6);
+  const [depth, setDepth] = useState<number>(4);
   const [isFlipped, setIsFlipped] = useState<boolean>(false);
   const [history, setHistory] = useState<{ board: Board; turn: 1 | -1 }[]>([]);
   const [future, setFuture] = useState<{ board: Board; turn: 1 | -1 }[]>([]);
@@ -68,6 +68,11 @@ export default function App() {
   // Solver Result & Analysis State
   const [solverResult, setSolverResult] = useState<SolverResult | null>(null);
   const [lastMoveMade, setLastMoveMade] = useState<Move | null>(null);
+
+  // Animation state: slide/pop the moved piece, fade out captured pieces, intro cascade
+  const [animTick, setAnimTick] = useState<number>(0);
+  const [ghostCaptures, setGhostCaptures] = useState<{ r: number; c: number; piece: number }[]>([]);
+  const [introTick, setIntroTick] = useState<number>(0);
 
   // Custom Position Editor State
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
@@ -140,7 +145,7 @@ export default function App() {
     setIsEngineThinking(true);
     // Use requestAnimationFrame / timeout to keep UI snappy
     setTimeout(() => {
-      const result = solvePosition(board, turn, depth, activeRules);
+      const result = solvePosition(board, turn, depth, activeRules, 900);
       setSolverResult(result);
       setIsEngineThinking(false);
     }, 10);
@@ -150,12 +155,19 @@ export default function App() {
     runSolver();
   }, [runSolver]);
 
+  // Clear the vanishing captured-piece ghosts once the animation finishes
+  useEffect(() => {
+    if (ghostCaptures.length === 0) return;
+    const t = setTimeout(() => setGhostCaptures([]), 500);
+    return () => clearTimeout(t);
+  }, [ghostCaptures]);
+
   // Handle Play vs Engine responses
   useEffect(() => {
     if (playVsEngine && turn !== humanColor && !isEngineThinking && solverResult?.bestMove && !pendingHuff) {
       const timer = setTimeout(() => {
         applyMove(solverResult.bestMove!);
-      }, 400);
+      }, 120);
       return () => clearTimeout(timer);
     }
       }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, pendingHuff]);
@@ -186,6 +198,12 @@ export default function App() {
       setSelectedPos(null);
       setHoveredMove(null);
       setLastMoveMade(move);
+      setAnimTick(t => t + 1);
+      if (move.captured.length > 0) {
+        setGhostCaptures(move.captured.map(p => ({ r: p.r, c: p.c, piece: board[p.r][p.c] })));
+      } else {
+        setGhostCaptures([]);
+      }
 
       if (move.captured.length > 0) {
         playSound('capture');
@@ -237,6 +255,7 @@ export default function App() {
     setSelectedPos(null);
     setHoveredMove(null);
     setLastMoveMade(null);
+    setGhostCaptures([]);
   }, [history, board, turn]);
 
   // Redo move
@@ -337,6 +356,8 @@ export default function App() {
       setFuture([]);
       setPendingHuff(null);
       setSolverResult(null);
+      setGhostCaptures([]);
+      setIntroTick(t => t + 1);
       if (vsEngine) {
         setPlayVsEngine(true);
         setHumanColor(color);
@@ -361,6 +382,8 @@ export default function App() {
     }
     setBoard(newBoard);
     setPendingHuff(null);
+    setAnimTick(t => t + 1);
+    setGhostCaptures(pendingHuff.pieces.map(p => ({ r: p.r, c: p.c, piece: board[p.r][p.c] })));
     playSound('capture');
     showToast('⚠️ Punishment: piece that refused to capture was removed!');
 
@@ -395,6 +418,13 @@ export default function App() {
 
   // Compute best move or active hover move for board arrows
   const activeHighlightedMove = hoveredMove || solverResult?.bestMove || null;
+
+  // Ghost pieces currently playing the capture-vanish animation
+  const ghostMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const g of ghostCaptures) m[`${g.r}-${g.c}`] = g.piece;
+    return m;
+  }, [ghostCaptures]);
 
   // Helper to map board coordinates to SVG coordinates (percentages 0-100)
   const getSquareCenter = useCallback(
@@ -858,12 +888,23 @@ export default function App() {
                             </span>
                           )}
 
-                          {/* Piece Rendering */}
-                          {piece !== 0 && (
+                          {/* Piece Rendering (with slide + intro animations) */}
+                          {piece !== 0 && (() => {
+                            const isMovedPiece = !!(lastMoveMade && lastMoveMade.to.r === r && lastMoveMade.to.c === c && !isEditorOpen);
+                            const flipSign = isFlipped ? -1 : 1;
+                            const slideStyle = isMovedPiece
+                              ? ({
+                                  ['--dx' as any]: `${flipSign * (lastMoveMade!.from.c - lastMoveMade!.to.c) * 128.2}%`,
+                                  ['--dy' as any]: `${flipSign * (lastMoveMade!.from.r - lastMoveMade!.to.r) * 128.2}%`,
+                                } as React.CSSProperties)
+                              : undefined;
+                            return (
                             <div
+                              key={isMovedPiece ? `mv-${r}-${c}-${animTick}` : `pc-${r}-${c}-${introTick}`}
                               draggable={!isEditorOpen && Math.sign(piece) === turn}
                               onDragStart={e => handleDragStart(r, c, e)}
-                              className={`w-[78%] h-[78%] rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer relative shadow-xl ${
+                              style={isMovedPiece ? slideStyle : { animationDelay: `${((r + c) % 8) * 45}ms` }}
+                              className={`w-[78%] h-[78%] rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer relative shadow-xl ${isMovedPiece ? 'piece-slide' : 'piece-appear'}${
                                 piece > 0
                                   ? 'bg-gradient-to-b from-[#faf6ed] via-[#ede3cc] to-[#c7b99c] border-2 border-[#fff8e7] text-amber-950 shadow-amber-950/60'
                                   : 'bg-gradient-to-b from-[#2b2b2e] via-[#1a1b1d] to-[#0c0d0f] border-2 border-stone-600 text-amber-400 shadow-black/80'
@@ -885,6 +926,23 @@ export default function App() {
                                   />
                                 )}
                               </div>
+                            </div>
+                            );
+                          })()}
+
+                          {/* Vanishing captured piece animation */}
+                          {piece === 0 && ghostMap[`${r}-${c}`] !== undefined && (
+                            <div
+                              key={`gh-${r}-${c}-${animTick}`}
+                              className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                            >
+                              <div
+                                className={`w-[78%] h-[78%] rounded-full capture-vanish ${
+                                  ghostMap[`${r}-${c}`] > 0
+                                    ? 'bg-gradient-to-b from-[#faf6ed] via-[#ede3cc] to-[#c7b99c] border-2 border-[#fff8e7] shadow-amber-950/60'
+                                    : 'bg-gradient-to-b from-[#2b2b2e] via-[#1a1b1d] to-[#0c0d0f] border-2 border-stone-600 shadow-black/80'
+                                }`}
+                              />
                             </div>
                           )}
 

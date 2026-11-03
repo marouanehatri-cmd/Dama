@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'com.damamaster.app',
   appName: 'Dama Master',
   webDir: 'dist',
-  bundledWebRuntime: false,
   server: {
     androidScheme: 'https',
   },

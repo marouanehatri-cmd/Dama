@@ -552,7 +552,7 @@ export default function App() {
                 <span className="font-semibold text-amber-300">1. Man Movement:</span> Men move 1 step diagonally forward only into an empty dark square.
               </div>
               <div className="pt-2">
-                <span className="font-semibold text-amber-300">2. Man Capture (Forward & Backward):</span> Men capture 1 step diagonally forward OR backward by leaping over an adjacent opponent piece into an empty square.
+                <span className="font-semibold text-amber-300">2. Man Capture (Forward Only):</span> Men capture 1 step diagonally forward by leaping over an adjacent opponent piece into an empty dark square. Regular pieces cannot go backward or capture behind—only Kings (Dama) have the ability to move and capture backward in all directions.
               </div>
               <div className="pt-2">
                 <span className="font-semibold text-amber-300">3. Mandatory Capture & The Huffing Rule (النفخ):</span> If captures are mandatory, a non-capturing move is strictly illegal. If captures are optional, failing to capture grants the opponent the traditional right of &quot;Huffing&quot; (حق النفخ)—blowing the offending piece off the board!

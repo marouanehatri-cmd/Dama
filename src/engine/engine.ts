@@ -9,8 +9,8 @@ export const VARIANTS: Record<string, VariantRules> = {
   moroccan: {
     id: 'moroccan',
     name: 'Moroccan Dama (الضامة المغربية)',
-    description: 'Authentic Moroccan rules: Men move forward 1 step, capture backward/forward 1 step. Flying kings sweep diagonals. Mandatory majority capture. Immediate promotion turn-end.',
-    menCaptureBackwards: true,
+    description: 'Authentic Moroccan rules: Men move and capture forward only (no backward captures). Flying kings move and sweep diagonals in all directions. Mandatory majority capture. Immediate promotion turn-end.',
+    menCaptureBackwards: false,
     mandatoryCapture: true,
     maxCaptureMajority: true,
     flyingKing: true,

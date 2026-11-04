@@ -8,8 +8,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" href="/icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon.png" />
     <title>Dama Master - Universal Checkers Solver</title>
     <meta name="description" content="Moroccan Dama and universal checkers solver with 100% accurate Moroccan rules, mandatory max capture enforcement, flying kings, minimax analysis, and custom position setup." />
     <meta property="og:title" content="Dama Master - Universal Checkers Solver" />
@@ -19,10 +20,73 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      #app-preloader {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: radial-gradient(circle at center, #231208 0%, #120904 50%, #08090d 100%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        transition: opacity 0.4s ease-out, visibility 0.4s ease-out;
+        font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+        color: #f1f5f9;
+        user-select: none;
+      }
+      .preloader-emblem {
+        width: 110px;
+        height: 110px;
+        border-radius: 26px;
+        box-shadow: 0 0 50px rgba(245, 158, 11, 0.35), 0 10px 30px rgba(0, 0, 0, 0.8);
+        border: 2px solid rgba(245, 158, 11, 0.6);
+        animation: pulseEmblem 2.5s ease-in-out infinite;
+      }
+      @keyframes pulseEmblem {
+        0%, 100% { transform: scale(1); box-shadow: 0 0 40px rgba(245, 158, 11, 0.3); }
+        50% { transform: scale(1.04); box-shadow: 0 0 65px rgba(245, 158, 11, 0.55); }
+      }
+      .preloader-bar-bg {
+        width: 220px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 999px;
+        overflow: hidden;
+        margin-top: 24px;
+        border: 1px solid rgba(245, 158, 11, 0.25);
+      }
+      .preloader-bar-fill {
+        height: 100%;
+        width: 40%;
+        background: linear-gradient(90deg, #f59e0b, #fbbf24, #f59e0b);
+        border-radius: 999px;
+        animation: loadingBar 1.6s ease-in-out infinite;
+      }
+      @keyframes loadingBar {
+        0% { transform: translateX(-100%); width: 35%; }
+        50% { width: 75%; }
+        100% { transform: translateX(350%); width: 35%; }
+      }
+    </style>
   </head>
   <body>
+    <div id="app-preloader">
+      <img src="/icon.png" alt="Dama Master" class="preloader-emblem" />
+      <h1 style="margin-top: 20px; font-family: 'Cinzel', serif; font-size: 24px; font-weight: 800; letter-spacing: 0.08em; background: linear-gradient(to right, #fef08a, #f59e0b, #d97706); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+        DAMA MASTER
+      </h1>
+      <p style="margin: 4px 0 0; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; color: #94a3b8; font-weight: 600;">
+        الضامة المغربية · Moroccan Dama
+      </p>
+      <div class="preloader-bar-bg">
+        <div class="preloader-bar-fill"></div>
+      </div>
+      <p style="margin-top: 10px; font-size: 11px; color: #d97706; font-family: monospace;">
+        Initializing Moroccan Engine...
+      </p>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

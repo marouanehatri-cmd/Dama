@@ -80,8 +80,39 @@ export default function App() {
   const [showNewGameModal, setShowNewGameModal] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
 
+  // Loading Screen State (Silky splash on launch)
+  const [isLoadingScreen, setIsLoadingScreen] = useState<boolean>(true);
+  const [loadingProgress, setLoadingProgress] = useState<number>(15);
+  const [loadingStepText, setLoadingStepText] = useState<string>('Loading Moroccan Dama...');
+
   // Capture Rule Toggle (Mandatory vs Optional)
   const [isMandatoryCapture, setIsMandatoryCapture] = useState<boolean>(true);
+
+  // Progressive loading screen effect on initial startup
+  useEffect(() => {
+    const t1 = setTimeout(() => {
+      setLoadingProgress(45);
+      setLoadingStepText('Validating Moroccan Rules...');
+    }, 200);
+    const t2 = setTimeout(() => {
+      setLoadingProgress(80);
+      setLoadingStepText('Initializing Minimax Engine...');
+    }, 500);
+    const t3 = setTimeout(() => {
+      setLoadingProgress(100);
+      setLoadingStepText('Ready to Play!');
+    }, 850);
+    const t4 = setTimeout(() => {
+      setIsLoadingScreen(false);
+    }, 1200);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, []);
 
   // New Game Configuration State
   const [newGameColor, setNewGameColor] = useState<1 | -1>(1);
@@ -522,6 +553,67 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0d0f14] text-slate-100 font-sans selection:bg-amber-500/30">
+      {/* Luxury Moroccan Dama Loading / Splash Screen */}
+      {isLoadingScreen && (
+        <div
+          onClick={() => setIsLoadingScreen(false)}
+          className="fixed inset-0 z-50 bg-[#0a0c10] flex flex-col items-center justify-center p-6 text-center select-none cursor-pointer transition-opacity duration-500 overflow-hidden animate-in fade-in duration-300"
+          style={{
+            backgroundImage: `radial-gradient(circle at center, rgba(69, 26, 3, 0.55) 0%, rgba(13, 15, 20, 0.96) 65%, #0a0c10 100%)`,
+          }}
+        >
+          {/* Ambient Warm Glow */}
+          <div className="absolute w-[450px] h-[450px] rounded-full bg-amber-600/15 blur-3xl pointer-events-none animate-pulse" />
+
+          {/* Central Logo / Royal Icon Badge */}
+          <div className="relative mb-6">
+            <div className="w-28 h-28 md:w-36 md:h-36 rounded-3xl overflow-hidden border-2 border-amber-500/70 shadow-2xl shadow-amber-500/30 p-1 bg-gradient-to-br from-amber-950 via-[#1e0e07] to-black transform hover:scale-105 transition-transform duration-300">
+              <img
+                src="/icon.png"
+                alt="Moroccan Dama Master"
+                className="w-full h-full object-cover rounded-2xl"
+              />
+            </div>
+            {/* Shimmer origin badge */}
+            <div className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 text-[10px] font-extrabold text-slate-950 uppercase tracking-widest border border-amber-300 shadow-md">
+              Morocco
+            </div>
+          </div>
+
+          {/* Titles */}
+          <h1 className="text-3xl md:text-5xl font-extrabold tracking-wider font-serif text-transparent bg-clip-text bg-gradient-to-r from-amber-100 via-amber-300 to-amber-500 drop-shadow-md">
+            DAMA MASTER
+          </h1>
+          <p className="text-xs md:text-sm text-amber-200/80 font-medium tracking-widest uppercase mt-2">
+            الضامة المغربية · Official Moroccan Engine
+          </p>
+
+          {/* Progress Bar Container */}
+          <div className="w-64 md:w-80 mt-8 space-y-2.5">
+            <div className="w-full h-2.5 bg-slate-900/90 rounded-full overflow-hidden p-0.5 border border-amber-500/30 shadow-inner">
+              <div
+                className="h-full bg-gradient-to-r from-amber-600 via-amber-400 to-amber-300 rounded-full transition-all duration-300 ease-out shadow-sm shadow-amber-400/50"
+                style={{ width: `${loadingProgress}%` }}
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+              <span className="text-amber-400 flex items-center gap-1.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                {loadingStepText}
+              </span>
+              <span className="font-bold text-amber-300">{loadingProgress}%</span>
+            </div>
+          </div>
+
+          {/* Skip prompt */}
+          <div className="mt-12 text-[11px] text-slate-500 hover:text-amber-400 transition-colors flex items-center gap-1.5">
+            <span>Tap anywhere to start</span>
+            <span>→</span>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification */}
       {notification && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-slate-950 font-semibold px-4 py-2 rounded-lg shadow-xl text-xs flex items-center gap-2 animate-bounce">
@@ -736,8 +828,8 @@ export default function App() {
         <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
           <div>
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center shadow-lg shadow-amber-900/40 text-black font-bold">
-                <Crown className="w-6 h-6" />
+              <div className="w-11 h-11 rounded-2xl overflow-hidden border-2 border-amber-500/60 shadow-lg shadow-amber-950/70 bg-[#1e0e06] p-0.5 flex-shrink-0 group hover:scale-105 transition-transform">
+                <img src="/icon.png" alt="Moroccan Dama" className="w-full h-full object-cover rounded-xl" />
               </div>
               <div>
                 <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight font-serif text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-amber-400 to-amber-100">

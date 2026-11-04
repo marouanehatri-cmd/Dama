@@ -791,10 +791,9 @@ export function minimax(
   beta: number,
   maximizing: boolean,
   rules: VariantRules = VARIANTS.moroccan,
-  stats: { nodes: number; startTime: number; timeLimitMs: number } = {
+  stats: { nodes: number; endTime: number } = {
     nodes: 0,
-    startTime: Date.now(),
-    timeLimitMs: 2000,
+    endTime: Date.now() + 150,
   }
 ): { score: number; bestMove: Move | null } {
   stats.nodes++;
@@ -811,7 +810,7 @@ export function minimax(
   }
 
   // Depth limit or time limit reached
-  if (depth <= 0 || Date.now() - stats.startTime > stats.timeLimitMs) {
+  if (depth <= 0 || (stats.nodes % 32 === 0 && Date.now() >= stats.endTime)) {
     return {
       score: evaluateBoard(board),
       bestMove: null,
@@ -848,7 +847,7 @@ export function minimax(
         bestMove = move;
       }
       alpha = Math.max(alpha, score);
-      if (beta <= alpha) break; // Alpha-beta cutoff
+      if (beta <= alpha || Date.now() >= stats.endTime) break; // Alpha-beta cutoff or time expiry
     }
     return { score: maxEval, bestMove };
   } else {
@@ -868,7 +867,7 @@ export function minimax(
         bestMove = move;
       }
       beta = Math.min(beta, score);
-      if (beta <= alpha) break; // Alpha-beta cutoff
+      if (beta <= alpha || Date.now() >= stats.endTime) break; // Alpha-beta cutoff or time expiry
     }
     return { score: minEval, bestMove };
   }
@@ -883,7 +882,7 @@ export function solvePosition(
   player: 1 | -1,
   depth: number,
   rules: VariantRules = VARIANTS.moroccan,
-  timeLimitMs: number = 3000
+  timeLimitMs: number = 150
 ): SolverResult {
   const startTime = performance.now();
   const allLegalMoves = getAllMoves(board, player, rules);
@@ -908,18 +907,55 @@ export function solvePosition(
     };
   }
 
-  const statsObj = { nodes: 0, startTime: Date.now(), timeLimitMs };
+  // Fast-path: Only 1 legal move available (forced capture)
+  if (allLegalMoves.length === 1) {
+    const forcedMove = allLegalMoves[0];
+    const evalScore = evaluateBoard(forcedMove.finalBoard);
+    forcedMove.score = evalScore;
+    return {
+      bestMove: forcedMove,
+      evaluation: evalScore,
+      allLegalMoves: [forcedMove],
+      stats: {
+        nodesEvaluated: 1,
+        timeMs: Math.max(1, performance.now() - startTime),
+        depthReached: depth,
+        totalPossibilities,
+        evalScore,
+        isWinning: evalScore > 300,
+        isLosing: evalScore < -300,
+      },
+    };
+  }
 
-  // Score each top-level move using minimax
+  // Cap effective search time strictly so UI never lags or freezes
+  const effectiveTimeCap = Math.min(timeLimitMs, 200);
+  const statsObj = { nodes: 0, endTime: Date.now() + effectiveTimeCap };
+
+  // Sort candidate moves before searching (captures first)
+  allLegalMoves.sort((a, b) => {
+    if (b.captured.length !== a.captured.length) return b.captured.length - a.captured.length;
+    if (b.isPromotion !== a.isPromotion) return b.isPromotion ? 1 : -1;
+    return 0;
+  });
+
   const scoredMoves: Move[] = [];
   let bestScore = player === 1 ? -Infinity : Infinity;
-  let bestMove: Move | null = null;
+  let bestMove: Move | null = allLegalMoves[0];
+
+  const searchDepth = Math.min(depth, 6); // Keep snappy depth
 
   for (const move of allLegalMoves) {
-    const searchDepth = Math.max(1, depth - 1);
+    if (Date.now() >= statsObj.endTime) {
+      // Time exceeded: evaluate remaining moves statically
+      move.score = evaluateBoard(move.finalBoard);
+      scoredMoves.push(move);
+      continue;
+    }
+
     const { score } = minimax(
       move.finalBoard,
-      searchDepth,
+      Math.max(1, searchDepth - 1),
       -Infinity,
       Infinity,
       player === -1, // next turn is opponent
@@ -943,34 +979,31 @@ export function solvePosition(
     }
   }
 
-  // Sort candidate moves so the best move is at index 0
+  // Sort candidate moves so best move is first
   scoredMoves.sort((a, b) => {
     const scoreA = a.score ?? 0;
     const scoreB = b.score ?? 0;
     if (player === 1) {
-      if (scoreB !== scoreA) return scoreB - scoreA;
-    } else {
-      if (scoreA !== scoreB) return scoreA - scoreB;
+      return scoreB - scoreA;
     }
-    return b.captured.length - a.captured.length;
+    return scoreA - scoreB;
   });
 
-  const timeElapsed = performance.now() - startTime;
-  const isWinning = (player === 1 && bestScore > 90000) || (player === -1 && bestScore < -90000);
-  const isLosing = (player === 1 && bestScore < -90000) || (player === -1 && bestScore > 90000);
+  const finalBestMove = bestMove || scoredMoves[0] || null;
+  const timeMs = Math.round(performance.now() - startTime);
 
   return {
-    bestMove: scoredMoves[0] || null,
-    evaluation: bestScore,
+    bestMove: finalBestMove,
+    evaluation: bestScore === -Infinity || bestScore === Infinity ? evaluateBoard(board) : bestScore,
     allLegalMoves: scoredMoves,
     stats: {
       nodesEvaluated: statsObj.nodes,
-      timeMs: Math.round(timeElapsed * 10) / 10,
-      depthReached: depth,
+      timeMs,
+      depthReached: searchDepth,
       totalPossibilities,
-      evalScore: bestScore,
-      isWinning,
-      isLosing,
+      evalScore: bestScore === -Infinity || bestScore === Infinity ? evaluateBoard(board) : bestScore,
+      isWinning: player === 1 ? bestScore > 500 : bestScore < -500,
+      isLosing: player === 1 ? bestScore < -500 : bestScore > 500,
     },
   };
 }

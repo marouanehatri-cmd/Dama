@@ -15,3 +15,43 @@
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
 }
+
+@keyframes pieceHop {
+  0% { transform: scale(1) translateZ(0); }
+  50% { transform: scale(1.18) translateZ(20px); filter: drop-shadow(0 12px 14px rgba(0,0,0,0.6)); }
+  100% { transform: scale(1) translateZ(0); }
+}
+
+@keyframes pieceCapture {
+  0% { transform: scale(1); opacity: 1; filter: brightness(1); }
+  40% { transform: scale(1.22); opacity: 0.9; filter: brightness(1.8) drop-shadow(0 0 10px rgba(239, 68, 68, 0.8)); }
+  100% { transform: scale(0.2) rotate(45deg); opacity: 0; filter: brightness(2); }
+}
+
+@keyframes crownBurst {
+  0% { transform: scale(0.3) rotate(-30deg); opacity: 0; }
+  60% { transform: scale(1.3) rotate(8deg); opacity: 1; filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.9)); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+@keyframes huffPuff {
+  0% { transform: scale(1); opacity: 1; }
+  35% { transform: scale(1.2) rotate(15deg); filter: blur(1px) brightness(1.5); }
+  100% { transform: scale(0) rotate(-60deg) translateY(-20px); opacity: 0; filter: blur(4px); }
+}
+
+.animate-piece-hop {
+  animation: pieceHop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.animate-piece-capture {
+  animation: pieceCapture 0.22s ease-out forwards;
+}
+
+.animate-crown-burst {
+  animation: crownBurst 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.animate-huff-puff {
+  animation: huffPuff 0.28s ease-out forwards;
+}

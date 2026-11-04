@@ -100,6 +100,21 @@ export default function App() {
   }
   const [huffState, setHuffState] = useState<HuffState | null>(null);
 
+  // Fast Animation States for Move Glide & Capture Pops
+  const [animatingPiece, setAnimatingPiece] = useState<{
+    piece: number;
+    currentPos: Position;
+    from: Position;
+    to: Position;
+    path: Position[];
+    hopIndex: number;
+    captured: Position[];
+  } | null>(null);
+
+  const [fadingCaptures, setFadingCaptures] = useState<Position[]>([]);
+  const [promotedPos, setPromotedPos] = useState<Position | null>(null);
+  const [huffingPos, setHuffingPos] = useState<Position | null>(null);
+
   const activeVariant: VariantRules = useMemo(() => {
     const base = VARIANTS[variantKey] || VARIANTS.moroccan;
     return {
@@ -159,32 +174,36 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   }, []);
 
-  // Run Solver Analysis whenever the board, turn, variant or depth changes
+  // Run Solver Analysis whenever the board, turn, variant or depth changes (optimized for instant UI)
   const runSolver = useCallback(() => {
     setIsEngineThinking(true);
-    // Use requestAnimationFrame / timeout to keep UI snappy
-    setTimeout(() => {
-      const result = solvePosition(board, turn, depth, activeVariant);
+    const timer = setTimeout(() => {
+      const result = solvePosition(board, turn, depth, activeVariant, 120);
       setSolverResult(result);
       setIsEngineThinking(false);
-    }, 10);
+    }, 16);
+    return () => clearTimeout(timer);
   }, [board, turn, depth, activeVariant]);
 
   useEffect(() => {
     runSolver();
   }, [runSolver]);
 
-  // Huffing Handlers ("النفخ")
+  // Huffing Handlers ("النفخ") with smooth puff animation
   const handleHuffPiece = useCallback(
     (target: { pos: Position; notation: string }) => {
       playSound('huff');
-      setBoard(prev => {
-        const next = cloneBoard(prev);
-        next[target.pos.r][target.pos.c] = 0;
-        return next;
-      });
-      setHuffState(null);
-      showToast(`💨 Huff Penalty (نفخ): Piece at ${target.notation} removed from the board!`);
+      setHuffingPos(target.pos);
+      setTimeout(() => {
+        setBoard(prev => {
+          const next = cloneBoard(prev);
+          next[target.pos.r][target.pos.c] = 0;
+          return next;
+        });
+        setHuffingPos(null);
+        setHuffState(null);
+        showToast(`💨 Huff Penalty (نفخ): Piece at ${target.notation} removed from the board!`);
+      }, 240);
     },
     [playSound, showToast]
   );
@@ -193,33 +212,26 @@ export default function App() {
     setHuffState(null);
   }, []);
 
-  // Handle Play vs Engine responses & Engine Huffing
+  // Handle Play vs Engine responses & Engine Huffing (Fast 120ms response delay)
   useEffect(() => {
-    if (playVsEngine && turn !== humanColor && !isEngineThinking) {
+    if (playVsEngine && turn !== humanColor && !isEngineThinking && !animatingPiece) {
       // If Human missed a capture, Engine exercises traditional Huffing right!
       if (huffState && huffState.entitledPlayer === turn) {
         const target = huffState.offenders[0];
         const timer = setTimeout(() => {
-          playSound('huff');
-          setBoard(prev => {
-            const next = cloneBoard(prev);
-            next[target.pos.r][target.pos.c] = 0;
-            return next;
-          });
-          setHuffState(null);
-          showToast(`🤖 Engine blew your piece at ${target.notation} off the board (حق النفخ)!`);
-        }, 500);
+          handleHuffPiece(target);
+        }, 220);
         return () => clearTimeout(timer);
       }
 
       if (solverResult?.bestMove) {
         const timer = setTimeout(() => {
           applyMove(solverResult.bestMove!);
-        }, 500);
+        }, 120); // Snappy, instant response!
         return () => clearTimeout(timer);
       }
     }
-  }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, huffState, playSound, showToast]);
+  }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, huffState, animatingPiece, handleHuffPiece]);
 
   // Legal moves available for current player
   const legalMoves = useMemo(() => {
@@ -237,9 +249,14 @@ export default function App() {
     return legalMoves.filter(m => m.from.r === selectedPos.r && m.from.c === selectedPos.c);
   }, [selectedPos, legalMoves]);
 
-  // Apply a move to the board
+  // Apply a move to the board with smooth, snappy step-by-step animation
   const applyMove = useCallback(
     (move: Move) => {
+      // Clear selection immediately for snappy feel
+      setSelectedPos(null);
+      setHoveredMove(null);
+      setLastMoveMade(move);
+
       // Check if moving player had captures available before making this move
       const piecesThatCouldCapture = getPiecesWithAvailableCaptures(board, turn, activeVariant);
       const nextTurn = (turn === 1 ? -1 : 1) as (1 | -1);
@@ -272,26 +289,71 @@ export default function App() {
         setHuffState(null);
       }
 
-      setHistory(prev => [...prev, { board: cloneBoard(board), turn }]);
-      setFuture([]);
-      setBoard(move.finalBoard);
-      setTurn(nextTurn);
-      setSelectedPos(null);
-      setHoveredMove(null);
-      setLastMoveMade(move);
+      const movingPieceVal = board[move.from.r][move.from.c];
+      const hops = move.path && move.path.length >= 2 ? move.path : [move.from, move.to];
+
+      // Step-by-step animation execution
+      setAnimatingPiece({
+        piece: movingPieceVal,
+        currentPos: hops[0],
+        from: move.from,
+        to: move.to,
+        path: hops,
+        hopIndex: 0,
+        captured: move.captured,
+      });
 
       if (move.captured.length > 0) {
-        playSound('capture');
-      } else {
-        playSound('move');
+        setFadingCaptures(move.captured);
       }
 
-      // Check win condition
-      const nextMoves = getAllMoves(move.finalBoard, nextTurn, activeVariant);
-      if (nextMoves.length === 0) {
-        playSound('win');
-        showToast(turn === 1 ? '🎉 White wins!' : '🎉 Black wins!');
-      }
+      const hopDuration = move.captured.length > 0 ? 110 : 100;
+
+      const advanceStep = (step: number) => {
+        if (step < hops.length - 1) {
+          const nextStep = step + 1;
+          setAnimatingPiece(prev =>
+            prev
+              ? {
+                  ...prev,
+                  currentPos: hops[nextStep],
+                  hopIndex: nextStep,
+                }
+              : null
+          );
+
+          if (move.captured.length > 0) {
+            playSound('capture');
+          } else {
+            playSound('move');
+          }
+
+          setTimeout(() => advanceStep(nextStep), hopDuration);
+        } else {
+          // Move animation complete
+          if (move.isPromotion) {
+            setPromotedPos(move.to);
+            setTimeout(() => setPromotedPos(null), 600);
+          }
+
+          setHistory(prev => [...prev, { board: cloneBoard(board), turn }]);
+          setFuture([]);
+          setBoard(move.finalBoard);
+          setTurn(nextTurn);
+          setAnimatingPiece(null);
+          setFadingCaptures([]);
+
+          // Check win condition
+          const nextMoves = getAllMoves(move.finalBoard, nextTurn, activeVariant);
+          if (nextMoves.length === 0) {
+            playSound('win');
+            showToast(turn === 1 ? '🎉 White wins!' : '🎉 Black wins!');
+          }
+        }
+      };
+
+      // Trigger first animation frame
+      setTimeout(() => advanceStep(0), 16);
     },
     [board, turn, activeVariant, playSound, showToast]
   );
@@ -950,17 +1012,27 @@ export default function App() {
                             </span>
                           )}
 
-                          {/* Piece Rendering */}
+                          {/* Piece Rendering with Smooth Animation Classes */}
                           {piece !== 0 && (
                             <div
-                              draggable={!isEditorOpen && Math.sign(piece) === turn}
+                              draggable={!isEditorOpen && Math.sign(piece) === turn && !animatingPiece}
                               onDragStart={e => handleDragStart(r, c, e)}
-                              className={`w-[78%] h-[78%] rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer relative shadow-xl ${
+                              className={`w-[78%] h-[78%] rounded-full flex items-center justify-center transition-all hover:scale-105 active:scale-95 cursor-pointer relative shadow-xl ${
                                 piece > 0
                                   ? 'bg-gradient-to-b from-[#faf6ed] via-[#ede3cc] to-[#c7b99c] border-2 border-[#fff8e7] text-amber-950 shadow-amber-950/60'
                                   : 'bg-gradient-to-b from-[#2b2b2e] via-[#1a1b1d] to-[#0c0d0f] border-2 border-stone-600 text-amber-400 shadow-black/80'
                               } ${
-                                isCapturedInActive ? 'opacity-40 line-through' : ''
+                                animatingPiece && animatingPiece.from.r === r && animatingPiece.from.c === c
+                                  ? 'opacity-0 pointer-events-none'
+                                  : fadingCaptures.some(p => p.r === r && p.c === c)
+                                  ? 'animate-piece-capture'
+                                  : huffingPos && huffingPos.r === r && huffingPos.c === c
+                                  ? 'animate-huff-puff'
+                                  : promotedPos && promotedPos.r === r && promotedPos.c === c
+                                  ? 'animate-crown-burst'
+                                  : isCapturedInActive
+                                  ? 'opacity-40 line-through'
+                                  : ''
                               }`}
                             >
                               {/* Concentric Engraved Ring styling */}
@@ -996,6 +1068,40 @@ export default function App() {
                       );
                     });
                   })}
+
+                  {/* Dynamic Sliding / Hopping Animated Piece Overlay */}
+                  {animatingPiece && (
+                    <div
+                      className="absolute pointer-events-none z-30 w-[12.5%] h-[12.5%] flex items-center justify-center transition-all ease-out"
+                      style={{
+                        left: `${(isFlipped ? 7 - animatingPiece.currentPos.c : animatingPiece.currentPos.c) * 12.5}%`,
+                        top: `${(isFlipped ? 7 - animatingPiece.currentPos.r : animatingPiece.currentPos.r) * 12.5}%`,
+                        transitionDuration: '110ms',
+                      }}
+                    >
+                      <div
+                        className={`w-[78%] h-[78%] rounded-full flex items-center justify-center relative shadow-2xl animate-piece-hop ${
+                          animatingPiece.piece > 0
+                            ? 'bg-gradient-to-b from-[#faf6ed] via-[#ede3cc] to-[#c7b99c] border-2 border-[#fff8e7] text-amber-950 shadow-amber-950/80 ring-2 ring-amber-300'
+                            : 'bg-gradient-to-b from-[#2b2b2e] via-[#1a1b1d] to-[#0c0d0f] border-2 border-stone-600 text-amber-400 shadow-black/95 ring-2 ring-amber-500'
+                        }`}
+                      >
+                        <div
+                          className={`w-3/4 h-3/4 rounded-full border flex items-center justify-center ${
+                            animatingPiece.piece > 0 ? 'border-amber-900/20' : 'border-stone-700/60'
+                          }`}
+                        >
+                          {Math.abs(animatingPiece.piece) === 2 && (
+                            <Crown
+                              className={`w-4 h-4 md:w-5 md:h-5 ${
+                                animatingPiece.piece > 0 ? 'text-amber-800 drop-shadow' : 'text-amber-400 drop-shadow'
+                              }`}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* SVG OVERLAY: Dynamic Curved / Arrow Trajectory for Best Move */}
                   {activeHighlightedMove && activeHighlightedMove.path.length >= 2 && (

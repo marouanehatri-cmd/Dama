@@ -11,7 +11,6 @@ import {
   RotateCw,
   Sparkles,
   BookOpen,
-  Download,
   Trash2,
   HelpCircle,
   CheckCircle2,
@@ -24,7 +23,10 @@ import {
   Sliders,
   ChevronRight,
   RefreshCw,
-  Smartphone,
+  Swords,
+  ShieldAlert,
+  Wind,
+  AlertCircle,
 } from 'lucide-react';
 import { Board, Move, Position, SolverResult, VariantRules } from './engine/types.ts';
 import {
@@ -38,19 +40,18 @@ import {
   posToNotation,
   notationToPos,
   getAllMoves,
-  getAllCaptures,
   findMaxCaptureLength,
   solvePosition,
   countTotalPossibilities,
+  getPiecesWithAvailableCaptures,
 } from './engine/engine.ts';
-import { generateSingleHtml } from './engine/exportSingleHtml.ts';
 
 export default function App() {
   // Game & Board State
   const [board, setBoard] = useState<Board>(createTestPosition);
   const [turn, setTurn] = useState<1 | -1>(1); // 1 = White, -1 = Black
   const [variantKey, setVariantKey] = useState<string>('moroccan');
-  const [depth, setDepth] = useState<number>(4);
+  const [depth, setDepth] = useState<number>(6);
   const [isFlipped, setIsFlipped] = useState<boolean>(false);
   const [history, setHistory] = useState<{ board: Board; turn: 1 | -1 }[]>([]);
   const [future, setFuture] = useState<{ board: Board; turn: 1 | -1 }[]>([]);
@@ -69,37 +70,46 @@ export default function App() {
   const [solverResult, setSolverResult] = useState<SolverResult | null>(null);
   const [lastMoveMade, setLastMoveMade] = useState<Move | null>(null);
 
-  // Animation state: slide/pop the moved piece, fade out captured pieces, intro cascade
-  const [animTick, setAnimTick] = useState<number>(0);
-  const [ghostCaptures, setGhostCaptures] = useState<{ r: number; c: number; piece: number }[]>([]);
-  const [introTick, setIntroTick] = useState<number>(0);
-
   // Custom Position Editor State
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
   const [editorTool, setEditorTool] = useState<number>(1); // 1: White Man, 2: White King, -1: Black Man, -2: Black King, 0: Eraser
 
   // Modals & Drawers
   const [showRulesModal, setShowRulesModal] = useState<boolean>(false);
-  const [showPhoneModal, setShowPhoneModal] = useState<boolean>(false);
   const [showNewGameModal, setShowNewGameModal] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
 
-  // Mandatory Capture Override (null = variant default): forced "must take" or optional "can ignore"
-  const [mandatoryCaptureEnabled, setMandatoryCaptureEnabled] = useState<boolean | null>(null);
+  // Capture Rule Toggle (Mandatory vs Optional)
+  const [isMandatoryCapture, setIsMandatoryCapture] = useState<boolean>(true);
 
-  // Pending punishment ("huff"): opponent ignored an available capture
-  const [pendingHuff, setPendingHuff] = useState<{ pieces: Position[]; mover: 1 | -1 } | null>(null);
+  // New Game Configuration State
+  const [newGameColor, setNewGameColor] = useState<1 | -1>(1);
+  const [newGameDifficulty, setNewGameDifficulty] = useState<number>(5);
+  const [newGameSetup, setNewGameSetup] = useState<'standard' | 'test'>('standard');
 
-  const activeVariant: VariantRules = VARIANTS[variantKey] || VARIANTS.moroccan;
+  // Huffing ("النفخ" / "Blow the piece") State
+  interface HuffTarget {
+    pos: Position;
+    notation: string;
+    pieceValue: number;
+  }
+  interface HuffState {
+    offenders: HuffTarget[];
+    neglectingPlayer: 1 | -1;
+    entitledPlayer: 1 | -1;
+  }
+  const [huffState, setHuffState] = useState<HuffState | null>(null);
 
-  // Effective rules with the user's mandatory-capture preference applied
-  const activeRules: VariantRules = useMemo(
-    () => ({ ...activeVariant, mandatoryCapture: mandatoryCaptureEnabled ?? activeVariant.mandatoryCapture }),
-    [activeVariant, mandatoryCaptureEnabled]
-  );
+  const activeVariant: VariantRules = useMemo(() => {
+    const base = VARIANTS[variantKey] || VARIANTS.moroccan;
+    return {
+      ...base,
+      mandatoryCapture: isMandatoryCapture,
+    };
+  }, [variantKey, isMandatoryCapture]);
 
-  // Sound effects via Web Audio API (optional, unobtrusive pleasant clicks)
-  const playSound = useCallback((type: 'move' | 'capture' | 'win') => {
+  // Sound effects via Web Audio API
+  const playSound = useCallback((type: 'move' | 'capture' | 'win' | 'huff') => {
     try {
       const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       const osc = ctx.createOscillator();
@@ -121,6 +131,15 @@ export default function App() {
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
         osc.start();
         osc.stop(ctx.currentTime + 0.12);
+      } else if (type === 'huff') {
+        // Moroccan "Huff" (النفخ) gust/blow sound effect
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(580, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.22);
+        gain.gain.setValueAtTime(0.22, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.22);
       } else if (type === 'win') {
         osc.frequency.setValueAtTime(440, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.25);
@@ -145,42 +164,72 @@ export default function App() {
     setIsEngineThinking(true);
     // Use requestAnimationFrame / timeout to keep UI snappy
     setTimeout(() => {
-      const result = solvePosition(board, turn, depth, activeRules, 900);
+      const result = solvePosition(board, turn, depth, activeVariant);
       setSolverResult(result);
       setIsEngineThinking(false);
     }, 10);
-  }, [board, turn, depth, activeRules]);
+  }, [board, turn, depth, activeVariant]);
 
   useEffect(() => {
     runSolver();
   }, [runSolver]);
 
-  // Clear the vanishing captured-piece ghosts once the animation finishes
-  useEffect(() => {
-    if (ghostCaptures.length === 0) return;
-    const t = setTimeout(() => setGhostCaptures([]), 500);
-    return () => clearTimeout(t);
-  }, [ghostCaptures]);
+  // Huffing Handlers ("النفخ")
+  const handleHuffPiece = useCallback(
+    (target: { pos: Position; notation: string }) => {
+      playSound('huff');
+      setBoard(prev => {
+        const next = cloneBoard(prev);
+        next[target.pos.r][target.pos.c] = 0;
+        return next;
+      });
+      setHuffState(null);
+      showToast(`💨 Huff Penalty (نفخ): Piece at ${target.notation} removed from the board!`);
+    },
+    [playSound, showToast]
+  );
 
-  // Handle Play vs Engine responses
+  const handleDismissHuff = useCallback(() => {
+    setHuffState(null);
+  }, []);
+
+  // Handle Play vs Engine responses & Engine Huffing
   useEffect(() => {
-    if (playVsEngine && turn !== humanColor && !isEngineThinking && solverResult?.bestMove && !pendingHuff) {
-      const timer = setTimeout(() => {
-        applyMove(solverResult.bestMove!);
-      }, 120);
-      return () => clearTimeout(timer);
+    if (playVsEngine && turn !== humanColor && !isEngineThinking) {
+      // If Human missed a capture, Engine exercises traditional Huffing right!
+      if (huffState && huffState.entitledPlayer === turn) {
+        const target = huffState.offenders[0];
+        const timer = setTimeout(() => {
+          playSound('huff');
+          setBoard(prev => {
+            const next = cloneBoard(prev);
+            next[target.pos.r][target.pos.c] = 0;
+            return next;
+          });
+          setHuffState(null);
+          showToast(`🤖 Engine blew your piece at ${target.notation} off the board (حق النفخ)!`);
+        }, 500);
+        return () => clearTimeout(timer);
+      }
+
+      if (solverResult?.bestMove) {
+        const timer = setTimeout(() => {
+          applyMove(solverResult.bestMove!);
+        }, 500);
+        return () => clearTimeout(timer);
+      }
     }
-      }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, pendingHuff]);
+  }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, huffState, playSound, showToast]);
 
   // Legal moves available for current player
   const legalMoves = useMemo(() => {
-    return solverResult?.allLegalMoves || getAllMoves(board, turn, activeRules);
-  }, [solverResult, board, turn, activeRules]);
+    return solverResult?.allLegalMoves || getAllMoves(board, turn, activeVariant);
+  }, [solverResult, board, turn, activeVariant]);
 
   // Max capture length currently available
   const maxCaptureCount = useMemo(() => {
-    return findMaxCaptureLength(board, turn, activeRules);
-  }, [board, turn, activeRules]);
+    return findMaxCaptureLength(board, turn, activeVariant);
+  }, [board, turn, activeVariant]);
 
   // Legal moves for the currently selected piece
   const legalMovesForSelected = useMemo(() => {
@@ -191,19 +240,45 @@ export default function App() {
   // Apply a move to the board
   const applyMove = useCallback(
     (move: Move) => {
+      // Check if moving player had captures available before making this move
+      const piecesThatCouldCapture = getPiecesWithAvailableCaptures(board, turn, activeVariant);
+      const nextTurn = (turn === 1 ? -1 : 1) as (1 | -1);
+
+      // If player had captures available, but chose not to capture (or missed taking):
+      if (piecesThatCouldCapture.length > 0 && move.captured.length === 0) {
+        const offenders: { pos: Position; notation: string; pieceValue: number }[] = [];
+        for (const p of piecesThatCouldCapture) {
+          const currentPos = p.r === move.from.r && p.c === move.from.c ? move.to : p;
+          const pieceVal = move.finalBoard[currentPos.r][currentPos.c];
+          if (Math.sign(pieceVal) === turn) {
+            offenders.push({
+              pos: currentPos,
+              notation: posToNotation(currentPos.r, currentPos.c),
+              pieceValue: pieceVal,
+            });
+          }
+        }
+
+        if (offenders.length > 0) {
+          setHuffState({
+            offenders,
+            neglectingPlayer: turn,
+            entitledPlayer: nextTurn,
+          });
+        } else {
+          setHuffState(null);
+        }
+      } else {
+        setHuffState(null);
+      }
+
       setHistory(prev => [...prev, { board: cloneBoard(board), turn }]);
       setFuture([]);
       setBoard(move.finalBoard);
-      setTurn(turn === 1 ? -1 : 1);
+      setTurn(nextTurn);
       setSelectedPos(null);
       setHoveredMove(null);
       setLastMoveMade(move);
-      setAnimTick(t => t + 1);
-      if (move.captured.length > 0) {
-        setGhostCaptures(move.captured.map(p => ({ r: p.r, c: p.c, piece: board[p.r][p.c] })));
-      } else {
-        setGhostCaptures([]);
-      }
 
       if (move.captured.length > 0) {
         playSound('capture');
@@ -212,37 +287,35 @@ export default function App() {
       }
 
       // Check win condition
-      const nextMoves = getAllMoves(move.finalBoard, turn === 1 ? -1 : 1, activeRules);
+      const nextMoves = getAllMoves(move.finalBoard, nextTurn, activeVariant);
       if (nextMoves.length === 0) {
         playSound('win');
         showToast(turn === 1 ? '🎉 White wins!' : '🎉 Black wins!');
       }
-
-      // Detect an ignored capture (only relevant when mandatory capture is optional):
-      // the mover had captures available but played a non-capturing move.
-      if (move.captured.length === 0 && findMaxCaptureLength(board, turn, activeRules) > 0) {
-        const offenders: Position[] = [];
-        for (let r = 0; r < 8; r++) {
-          for (let c = 0; c < 8; c++) {
-            if (Math.sign(board[r][c]) === turn) {
-              if (getAllCaptures(board, r, c, turn, activeRules).length > 0) {
-                // If the offending piece is the one that moved, track its new square
-                if (r === move.from.r && c === move.from.c) {
-                  offenders.push({ r: move.to.r, c: move.to.c });
-                } else {
-                  offenders.push({ r, c });
-                }
-              }
-            }
-          }
-        }
-        if (offenders.length > 0) {
-          setPendingHuff({ pieces: offenders, mover: turn });
-        }
-      }
     },
-    [board, turn, activeRules, playSound, showToast]
+    [board, turn, activeVariant, playSound, showToast]
   );
+
+  // Start New Game vs Engine
+  const handleStartNewGame = useCallback(() => {
+    const newB = newGameSetup === 'standard' ? createStartingBoard() : createTestPosition();
+    setBoard(newB);
+    setTurn(1);
+    setHumanColor(newGameColor);
+    setDepth(newGameDifficulty);
+    setPlayVsEngine(true);
+    setHistory([]);
+    setFuture([]);
+    setSelectedPos(null);
+    setHoveredMove(null);
+    setLastMoveMade(null);
+    setHuffState(null);
+    setShowNewGameModal(false);
+    playSound('move');
+    showToast(
+      `⚔️ New match started! You are ${newGameColor === 1 ? 'White (moves 1st)' : 'Black (Engine moves 1st)'}.`
+    );
+  }, [newGameSetup, newGameColor, newGameDifficulty, playSound, showToast]);
 
   // Undo move
   const handleUndo = useCallback(() => {
@@ -255,7 +328,6 @@ export default function App() {
     setSelectedPos(null);
     setHoveredMove(null);
     setLastMoveMade(null);
-    setGhostCaptures([]);
   }, [history, board, turn]);
 
   // Redo move
@@ -344,87 +416,8 @@ export default function App() {
     setDraggedPos(null);
   };
 
-  // Start a fresh game. vsEngine=true activates Play vs Engine mode with the chosen human color.
-  const startNewGame = useCallback(
-    (vsEngine: boolean, color: 1 | -1 = 1) => {
-      setBoard(createStartingBoard());
-      setTurn(1);
-      setSelectedPos(null);
-      setHoveredMove(null);
-      setLastMoveMade(null);
-      setHistory([]);
-      setFuture([]);
-      setPendingHuff(null);
-      setSolverResult(null);
-      setGhostCaptures([]);
-      setIntroTick(t => t + 1);
-      if (vsEngine) {
-        setPlayVsEngine(true);
-        setHumanColor(color);
-        setIsFlipped(color === -1);
-        showToast(color === 1 ? '🎮 New game vs Engine — you play White!' : '🎮 New game vs Engine — you play Black!');
-      } else {
-        setPlayVsEngine(false);
-        showToast('🎮 New game — two players on this board');
-      }
-    },
-    [showToast]
-  );
-
-  // Punishment decision: remove the piece(s) that ignored an available capture
-  const handleHuffRemove = useCallback(() => {
-    if (!pendingHuff) return;
-    setHistory(prev => [...prev, { board: cloneBoard(board), turn }]);
-    setFuture([]);
-    const newBoard = cloneBoard(board);
-    for (const p of pendingHuff.pieces) {
-      newBoard[p.r][p.c] = 0;
-    }
-    setBoard(newBoard);
-    setPendingHuff(null);
-    setAnimTick(t => t + 1);
-    setGhostCaptures(pendingHuff.pieces.map(p => ({ r: p.r, c: p.c, piece: board[p.r][p.c] })));
-    playSound('capture');
-    showToast('⚠️ Punishment: piece that refused to capture was removed!');
-
-    // Check if removal ended the game
-    const nextMoves = getAllMoves(newBoard, turn, activeRules);
-    if (nextMoves.length === 0) {
-      playSound('win');
-      showToast(turn === 1 ? '🎉 White wins!' : '🎉 Black wins!');
-    }
-  }, [pendingHuff, board, turn, activeRules, playSound, showToast]);
-
-  // Punishment decision: let the ignored capture slide
-  const handleHuffIgnore = useCallback(() => {
-    setPendingHuff(null);
-    showToast('Capture ignored — the move stands');
-  }, [showToast]);
-
-  // Export Standalone HTML
-  const handleExportHtml = () => {
-    const htmlContent = generateSingleHtml();
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'dama-master.html';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    showToast('💾 Downloaded standalone dama-master.html!');
-  };
-
   // Compute best move or active hover move for board arrows
   const activeHighlightedMove = hoveredMove || solverResult?.bestMove || null;
-
-  // Ghost pieces currently playing the capture-vanish animation
-  const ghostMap = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const g of ghostCaptures) m[`${g.r}-${g.c}`] = g.piece;
-    return m;
-  }, [ghostCaptures]);
 
   // Helper to map board coordinates to SVG coordinates (percentages 0-100)
   const getSquareCenter = useCallback(
@@ -445,114 +438,6 @@ export default function App() {
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-slate-950 font-semibold px-4 py-2 rounded-lg shadow-xl text-xs flex items-center gap-2 animate-bounce">
           <Zap className="w-4 h-4" />
           {notification}
-        </div>
-      )}
-
-      {/* Punishment Decision Modal: opponent ignored an available capture */}
-      {pendingHuff && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#161a22] border border-rose-800/60 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center">
-                <HelpCircle className="w-6 h-6 text-rose-400" />
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-slate-100">Ignored Capture!</h3>
-                <p className="text-xs text-slate-400">
-                  {pendingHuff.mover === 1 ? 'White' : 'Black'} had a capture available
-                  {activeRules.mandatoryCapture ? ' (mandatory!)' : ''} but played a non-capturing move.
-                </p>
-              </div>
-            </div>
-
-            <div className="text-xs text-slate-300 bg-slate-800/50 rounded-lg p-3 border border-slate-700/50">
-              <span className="text-slate-400">Offending piece{pendingHuff.pieces.length > 1 ? 's' : ''}:</span>{' '}
-              <span className="font-mono font-bold text-rose-300">
-                {pendingHuff.pieces.map(p => posToNotation(p.r, p.c)).join(', ')}
-              </span>
-            </div>
-
-            <p className="text-xs text-slate-400">
-              You decide the punishment: remove the piece that should have captured, or let the move stand.
-            </p>
-
-            <div className="flex gap-3 pt-1">
-              <button
-                onClick={handleHuffRemove}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white text-sm font-bold shadow-lg transition-colors flex items-center justify-center gap-2"
-              >
-                <Trash2 className="w-4 h-4" />
-                Remove Piece{pendingHuff.pieces.length > 1 ? 's' : ''}
-              </button>
-              <button
-                onClick={handleHuffIgnore}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold border border-slate-700 transition-colors flex items-center justify-center gap-2"
-              >
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                Let It Slide
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* New Game vs Engine Modal */}
-      {showNewGameModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#161a22] border border-emerald-900/60 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
-                  <Play className="w-5 h-5 text-emerald-400" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-slate-100">New Game vs Engine</h3>
-                  <p className="text-xs text-slate-400">Standard starting position · choose your color</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowNewGameModal(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-md"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => {
-                  startNewGame(true, 1);
-                  setShowNewGameModal(false);
-                }}
-                className="p-4 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-2 transition-colors"
-              >
-                <div className="w-9 h-9 rounded-full bg-amber-100 border-2 border-amber-300" />
-                <span className="text-sm font-bold text-slate-200">Play as White</span>
-                <span className="text-[10px] text-slate-500">You move first</span>
-              </button>
-              <button
-                onClick={() => {
-                  startNewGame(true, -1);
-                  setShowNewGameModal(false);
-                }}
-                className="p-4 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-2 transition-colors"
-              >
-                <div className="w-9 h-9 rounded-full bg-slate-900 border-2 border-slate-600" />
-                <span className="text-sm font-bold text-slate-200">Play as Black</span>
-                <span className="text-[10px] text-slate-500">Engine moves first</span>
-              </button>
-            </div>
-
-            <button
-              onClick={() => {
-                startNewGame(false);
-                setShowNewGameModal(false);
-              }}
-              className="w-full px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold border border-slate-700 transition-colors"
-            >
-              Or start a 2-player game instead
-            </button>
-          </div>
         </div>
       )}
 
@@ -581,7 +466,7 @@ export default function App() {
                 <span className="font-semibold text-amber-300">2. Man Capture (Forward & Backward):</span> Men capture 1 step diagonally forward OR backward by leaping over an adjacent opponent piece into an empty square.
               </div>
               <div className="pt-2">
-                <span className="font-semibold text-amber-300">3. Mandatory Capture:</span> If any capture exists on the board, non-capturing normal moves are strictly illegal.
+                <span className="font-semibold text-amber-300">3. Mandatory Capture & The Huffing Rule (النفخ):</span> If captures are mandatory, a non-capturing move is strictly illegal. If captures are optional, failing to capture grants the opponent the traditional right of &quot;Huffing&quot; (حق النفخ)—blowing the offending piece off the board!
               </div>
               <div className="pt-2">
                 <span className="font-semibold text-amber-300">4. MAX Capture Rule (Majority Law):</span> If multiple capture paths exist, a player MUST execute the path that captures the maximum number of opponent pieces.
@@ -605,75 +490,151 @@ export default function App() {
         </div>
       )}
 
-      {/* Phone & APK Install Modal */}
-      {showPhoneModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#161a22] border border-amber-900/60 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative text-sm space-y-4 max-h-[90vh] overflow-y-auto">
+      {/* New Game vs Engine Modal */}
+      {showNewGameModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#161a22] border border-amber-900/60 rounded-2xl max-w-md w-full p-6 shadow-2xl relative text-sm space-y-4">
             <button
-              onClick={() => setShowPhoneModal(false)}
+              onClick={() => setShowNewGameModal(false)}
               className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-md"
             >
               <X className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2.5 text-amber-400 font-serif text-lg font-bold">
-              <Smartphone className="w-5 h-5 text-amber-400" />
-              <span>Playing & Installing on Phone</span>
+              <Swords className="w-5 h-5 text-amber-400" />
+              <span>Start New Game vs Engine</span>
             </div>
 
-            <div className="space-y-3.5 text-xs text-slate-300">
-              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-1">
-                <div className="font-bold text-amber-300 flex items-center gap-1.5">
-                  <span>📱 Method 1: Instant Install (No APK Needed)</span>
-                </div>
-                <p className="text-slate-300 leading-relaxed">
-                  Open this app in Chrome / Samsung Internet on your phone, tap the <strong>3 dots (⋮)</strong> menu, and select <strong>&quot;Install app&quot;</strong> or <strong>&quot;Add to Home Screen&quot;</strong>.
-                  It installs instantly as a full-screen app with the royal Moroccan Dama icon!
-                </p>
-              </div>
-
-              <div className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl space-y-1">
-                <div className="font-bold text-sky-300 flex items-center gap-1.5">
-                  <span>🤖 Method 2: Download Native Android APK</span>
-                </div>
-                <p className="text-slate-300 leading-relaxed">
-                  The native Android APK was successfully built by GitHub Actions and is ready to install!
-                </p>
-                <div className="pt-2 flex flex-wrap gap-2">
-                  <a
-                    href="/dama-master-debug.apk"
-                    download="dama-master-debug.apk"
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-lg text-xs shadow-md transition-all"
-                  >
-                    <Download className="w-4 h-4 text-slate-950" />
-                    <span>Download Android APK (4.5 MB)</span>
-                  </a>
-                  <a
-                    href="https://github.com/marouanehatri-cmd/Dama/actions/runs/41708387509"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition-colors"
-                  >
-                    <span>View GitHub Build Run</span>
-                  </a>
-                </div>
-              </div>
-
-              <div className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl space-y-1">
-                <div className="font-bold text-emerald-300 flex items-center gap-1.5">
-                  <span>💾 Method 3: Offline Single File</span>
-                </div>
-                <p className="text-slate-300 leading-relaxed">
-                  Tap <strong>&quot;Export Single HTML&quot;</strong> to save the complete self-contained game file onto your phone. You can open and play it offline in any mobile browser anytime without internet!
-                </p>
+            {/* Side selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Choose Your Side
+              </label>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setNewGameColor(1)}
+                  className={`p-3 rounded-xl border flex items-center justify-center gap-2 transition-all ${
+                    newGameColor === 1
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold shadow-sm'
+                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  <div className="w-4 h-4 rounded-full bg-amber-100 border border-amber-300" />
+                  <span>White (Moves 1st)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewGameColor(-1)}
+                  className={`p-3 rounded-xl border flex items-center justify-center gap-2 transition-all ${
+                    newGameColor === -1
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold shadow-sm'
+                      : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  <div className="w-4 h-4 rounded-full bg-slate-950 border border-slate-600" />
+                  <span>Black (Engine 1st)</span>
+                </button>
               </div>
             </div>
 
-            <div className="pt-2 flex justify-end">
+            {/* Difficulty selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Engine Difficulty
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { depth: 3, label: 'Casual (Depth 3)', color: 'text-emerald-400' },
+                  { depth: 5, label: 'Standard (Depth 5)', color: 'text-sky-400' },
+                  { depth: 7, label: 'Master (Depth 7)', color: 'text-amber-400' },
+                  { depth: 9, label: 'Moroccan Champ (Depth 9)', color: 'text-rose-400' },
+                ].map(d => (
+                  <button
+                    key={d.depth}
+                    type="button"
+                    onClick={() => setNewGameDifficulty(d.depth)}
+                    className={`p-2.5 rounded-lg border text-xs font-medium text-left transition-all ${
+                      newGameDifficulty === d.depth
+                        ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold'
+                        : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className={d.color}>●</span> {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Board Setup */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Starting Setup
+              </label>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setNewGameSetup('standard')}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    newGameSetup === 'standard'
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold'
+                      : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  🏁 Standard Start (12 vs 12)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewGameSetup('test')}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    newGameSetup === 'test'
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold'
+                      : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  🎯 Moroccan King Test
+                </button>
+              </div>
+            </div>
+
+            {/* Capture rule for match */}
+            <div className="p-3 bg-slate-800/60 border border-slate-700 rounded-xl flex items-center justify-between">
+              <div>
+                <span className="text-xs font-semibold text-slate-200 block">
+                  Mandatory Capture Rule
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  {isMandatoryCapture ? 'Strict Moroccan (Must take piece)' : 'Optional (Can ignore + Huffing / حق النفخ)'}
+                </span>
+              </div>
               <button
-                onClick={() => setShowPhoneModal(false)}
-                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg text-xs"
+                type="button"
+                onClick={() => setIsMandatoryCapture(v => !v)}
+                className={`px-3 py-1 text-xs font-bold rounded-lg border transition-all ${
+                  isMandatoryCapture
+                    ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                    : 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                }`}
               >
-                Close
+                {isMandatoryCapture ? 'Mandatory' : 'Optional'}
+              </button>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowNewGameModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleStartNewGame}
+                className="px-5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-lg text-xs shadow-lg shadow-amber-950/50"
+              >
+                Start Match
               </button>
             </div>
           </div>
@@ -700,50 +661,26 @@ export default function App() {
             </div>
           </div>
 
-          {/* Quick Header Actions */}
+          {/* Quick Header Actions: Clean and focused */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setShowNewGameModal(true)}
-              className="px-3 py-1.5 text-xs font-bold rounded-lg bg-gradient-to-r from-emerald-500/25 to-emerald-600/30 hover:from-emerald-500/40 hover:to-emerald-600/50 text-emerald-300 border border-emerald-500/50 flex items-center gap-1.5 transition-colors shadow-sm"
-              title="Start a fresh game against the engine"
+              className="px-3.5 py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 flex items-center gap-1.5 shadow-md shadow-amber-950/40 transition-all active:scale-95"
+              title="Start a new match against the Moroccan Dama engine"
             >
-              <Play className="w-3.5 h-3.5 text-emerald-400" />
+              <Swords className="w-4 h-4 text-slate-950" />
               <span>New Game vs Engine</span>
             </button>
             <button
-              onClick={() => startNewGame(false)}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-sky-500/20 to-sky-600/25 hover:from-sky-500/30 hover:to-sky-600/40 text-sky-300 border border-sky-500/40 flex items-center gap-1.5 transition-colors shadow-sm"
-              title="Reset to the standard starting position (two players)"
-            >
-              <Zap className="w-3.5 h-3.5 text-sky-400" />
-              <span>New Game (2 Players)</span>
-            </button>
-            <button
-              onClick={() => setShowPhoneModal(true)}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-amber-500/20 to-amber-600/30 hover:from-amber-500/30 hover:to-amber-600/40 text-amber-300 border border-amber-500/40 flex items-center gap-1.5 transition-colors shadow-sm"
-              title="Install or play on phone"
-            >
-              <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-              <span>Phone / APK Guide</span>
-            </button>
-            <button
               onClick={() => setShowRulesModal(true)}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
+              className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
             >
               <BookOpen className="w-3.5 h-3.5 text-amber-400" />
               <span>Moroccan Rules</span>
             </button>
             <button
-              onClick={handleExportHtml}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
-              title="Download 100% self-contained offline HTML file"
-            >
-              <Download className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Export Single HTML</span>
-            </button>
-            <button
               onClick={() => setIsFlipped(f => !f)}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
+              className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors"
               title="Flip perspective"
             >
               <RefreshCw className="w-3.5 h-3.5 text-sky-400" />
@@ -752,45 +689,142 @@ export default function App() {
           </div>
         </header>
 
-        {/* Preset Positions & User Test Preset Banner */}
-        <div className="flex flex-wrap items-center gap-2 bg-[#13161f] border border-amber-900/30 p-2.5 rounded-xl">
-          <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider px-2 flex items-center gap-1.5">
-            <Target className="w-3.5 h-3.5" />
-            Presets:
-          </span>
-          {PRESETS.map(preset => {
-            const isTest = preset.id === 'test_d4_e5_f6';
-            return (
-              <button
-                key={preset.id}
-                onClick={() => {
-                  setBoard(preset.board());
-                  setTurn(preset.turn);
-                  setSelectedPos(null);
-                  setHoveredMove(null);
-                  setHistory([]);
-                  setFuture([]);
-                  setPendingHuff(null);
-                  setPlayVsEngine(false);
-                  showToast(`Loaded: ${preset.name}`);
-                }}
-                className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
-                  isTest
-                    ? 'bg-gradient-to-r from-amber-500/25 to-amber-600/30 text-amber-300 border border-amber-500/50 shadow-sm hover:from-amber-500/40 hover:to-amber-600/40'
-                    : 'bg-slate-800/60 text-slate-300 hover:bg-slate-700/80 border border-slate-700/50'
-                }`}
-                title={preset.description}
-              >
-                {preset.name}
-              </button>
-            );
-          })}
+        {/* Preset Positions & Options Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13161f] border border-amber-900/30 p-2.5 rounded-xl">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider px-1 flex items-center gap-1.5">
+              <Target className="w-3.5 h-3.5" />
+              Presets:
+            </span>
+            {PRESETS.map(preset => {
+              const isTest = preset.id === 'test_d4_e5_f6';
+              return (
+                <button
+                  key={preset.id}
+                  onClick={() => {
+                    setBoard(preset.board());
+                    setTurn(preset.turn);
+                    setSelectedPos(null);
+                    setHoveredMove(null);
+                    setHistory([]);
+                    setFuture([]);
+                    setHuffState(null);
+                    showToast(`Loaded: ${preset.name}`);
+                  }}
+                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                    isTest
+                      ? 'bg-gradient-to-r from-amber-500/25 to-amber-600/30 text-amber-300 border border-amber-500/50 shadow-sm hover:from-amber-500/40 hover:to-amber-600/40'
+                      : 'bg-slate-800/60 text-slate-300 hover:bg-slate-700/80 border border-slate-700/50'
+                  }`}
+                  title={preset.description}
+                >
+                  {preset.name}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Capture Rule: Must Take vs Can Ignore Button */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setIsMandatoryCapture(v => {
+                  const next = !v;
+                  showToast(
+                    next
+                      ? '🔒 Mandatory Capture: ON (Must take pieces)'
+                      : '🔓 Capture Optional: OFF (Can ignore capture + Huffing enabled)'
+                  );
+                  return next;
+                });
+              }}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm active:scale-95 ${
+                isMandatoryCapture
+                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 hover:bg-amber-500/30'
+                  : 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/30'
+              }`}
+              title="Click to toggle: Must Take pieces vs Can Ignore piece"
+            >
+              {isMandatoryCapture ? (
+                <>
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Must Take: ON (Strict)</span>
+                </>
+              ) : (
+                <>
+                  <Wind className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Can Ignore: OFF (Huffing Active)</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Main Grid: Left Board / Right Solver Sidebar */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* LEFT: Board & Board Controls */}
           <div className="lg:col-span-7 flex flex-col items-center space-y-4">
+            {/* HUFFING DECISION BANNER (حق النفخ في الضامة) */}
+            {huffState && huffState.entitledPlayer === turn && (
+              <div className="w-full max-w-[500px] bg-gradient-to-r from-red-950/95 via-amber-950/95 to-slate-900/95 border-2 border-amber-500/80 rounded-2xl p-4 shadow-2xl animate-in fade-in slide-in-from-top-3 text-xs text-slate-200 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500/30 to-amber-500/20 border border-amber-400/60 flex items-center justify-center text-xl shadow-md">
+                      💨
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-amber-300 font-serif text-sm">
+                          Huff Opportunity! (حق النفخ في الضامة)
+                        </span>
+                        <span className="text-[10px] bg-red-500/20 text-red-300 border border-red-500/30 px-1.5 py-0.5 rounded font-mono uppercase">
+                          Penalty
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 pt-0.5 leading-snug">
+                        Opponent moved without taking when a capture was available! You can blow (remove) their offending piece or let it stay.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleDismissHuff}
+                    className="text-slate-400 hover:text-white p-1 rounded-md"
+                    title="Let piece stay and continue"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-amber-900/50">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400 text-xs">Neglected piece:</span>
+                    {huffState.offenders.map(offender => (
+                      <span
+                        key={offender.notation}
+                        className="font-mono font-bold text-amber-200 bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/40"
+                      >
+                        {offender.notation}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleHuffPiece(huffState.offenders[0])}
+                      className="px-3.5 py-1.5 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-bold rounded-lg text-xs shadow-md transition-all flex items-center gap-1.5 active:scale-95"
+                    >
+                      <span>💨 Remove Piece (نفخ)</span>
+                    </button>
+                    <button
+                      onClick={handleDismissHuff}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs transition-colors"
+                    >
+                      <span>Let It Stay</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Top Board Bar: Player Turn Badge & History Controls */}
             <div className="w-full max-w-[500px] flex items-center justify-between bg-[#151922] px-4 py-2.5 rounded-xl border border-slate-800 text-xs">
               <div className="flex items-center gap-2.5">
@@ -804,9 +838,15 @@ export default function App() {
                 <span className="font-semibold text-slate-200">
                   {turn === 1 ? 'White to Move' : 'Black to Move'}
                 </span>
-                {maxCaptureCount > 0 && (
+                {playVsEngine && (
+                  <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 flex items-center gap-1">
+                    <Swords className="w-3 h-3" />
+                    vs Engine
+                  </span>
+                )}
+                {maxCaptureCount > 0 && isMandatoryCapture && (
                   <span className="text-[11px] font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
-                    Mandatory Capture ({maxCaptureCount})
+                    Mandatory ({maxCaptureCount})
                   </span>
                 )}
               </div>
@@ -845,6 +885,12 @@ export default function App() {
                       const piece = board[r][c];
                       const isSelected = selectedPos && selectedPos.r === r && selectedPos.c === c;
 
+                      // Is this piece a Huffing target that missed a capture?
+                      const isHuffTarget =
+                        huffState &&
+                        huffState.entitledPlayer === turn &&
+                        huffState.offenders.some(o => o.pos.r === r && o.pos.c === c);
+
                       // Is this square a legal destination for selected piece?
                       const legalMoveTarget = legalMovesForSelected.find(m => m.to.r === r && m.to.c === c);
                       const isTarget = !!legalMoveTarget;
@@ -874,6 +920,22 @@ export default function App() {
                               : ''
                           }`}
                         >
+                          {/* Huff target indicator overlay */}
+                          {isHuffTarget && (
+                            <div
+                              onClick={e => {
+                                e.stopPropagation();
+                                const target = huffState.offenders.find(o => o.pos.r === r && o.pos.c === c);
+                                if (target) handleHuffPiece(target);
+                              }}
+                              className="absolute inset-0 z-30 ring-4 ring-red-500 ring-dashed animate-pulse rounded-sm flex items-start justify-end p-1 cursor-pointer bg-red-500/25"
+                              title="Click to blow/remove this piece (حق النفخ)"
+                            >
+                              <span className="text-[10px] font-bold bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center shadow-lg">
+                                💨
+                              </span>
+                            </div>
+                          )}
                           {/* Board Coordinates: Rank numbers along left edge */}
                           {cIdx === 0 && (
                             <span className="absolute top-1 left-1 text-[9px] font-mono font-bold text-amber-200/40 pointer-events-none">
@@ -888,23 +950,12 @@ export default function App() {
                             </span>
                           )}
 
-                          {/* Piece Rendering (with slide + intro animations) */}
-                          {piece !== 0 && (() => {
-                            const isMovedPiece = !!(lastMoveMade && lastMoveMade.to.r === r && lastMoveMade.to.c === c && !isEditorOpen);
-                            const flipSign = isFlipped ? -1 : 1;
-                            const slideStyle = isMovedPiece
-                              ? ({
-                                  ['--dx' as any]: `${flipSign * (lastMoveMade!.from.c - lastMoveMade!.to.c) * 128.2}%`,
-                                  ['--dy' as any]: `${flipSign * (lastMoveMade!.from.r - lastMoveMade!.to.r) * 128.2}%`,
-                                } as React.CSSProperties)
-                              : undefined;
-                            return (
+                          {/* Piece Rendering */}
+                          {piece !== 0 && (
                             <div
-                              key={isMovedPiece ? `mv-${r}-${c}-${animTick}` : `pc-${r}-${c}-${introTick}`}
                               draggable={!isEditorOpen && Math.sign(piece) === turn}
                               onDragStart={e => handleDragStart(r, c, e)}
-                              style={isMovedPiece ? slideStyle : { animationDelay: `${((r + c) % 8) * 45}ms` }}
-                              className={`w-[78%] h-[78%] rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer relative shadow-xl ${isMovedPiece ? 'piece-slide' : 'piece-appear'}${
+                              className={`w-[78%] h-[78%] rounded-full flex items-center justify-center transition-transform hover:scale-105 active:scale-95 cursor-pointer relative shadow-xl ${
                                 piece > 0
                                   ? 'bg-gradient-to-b from-[#faf6ed] via-[#ede3cc] to-[#c7b99c] border-2 border-[#fff8e7] text-amber-950 shadow-amber-950/60'
                                   : 'bg-gradient-to-b from-[#2b2b2e] via-[#1a1b1d] to-[#0c0d0f] border-2 border-stone-600 text-amber-400 shadow-black/80'
@@ -926,23 +977,6 @@ export default function App() {
                                   />
                                 )}
                               </div>
-                            </div>
-                            );
-                          })()}
-
-                          {/* Vanishing captured piece animation */}
-                          {piece === 0 && ghostMap[`${r}-${c}`] !== undefined && (
-                            <div
-                              key={`gh-${r}-${c}-${animTick}`}
-                              className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                            >
-                              <div
-                                className={`w-[78%] h-[78%] rounded-full capture-vanish ${
-                                  ghostMap[`${r}-${c}`] > 0
-                                    ? 'bg-gradient-to-b from-[#faf6ed] via-[#ede3cc] to-[#c7b99c] border-2 border-[#fff8e7] shadow-amber-950/60'
-                                    : 'bg-gradient-to-b from-[#2b2b2e] via-[#1a1b1d] to-[#0c0d0f] border-2 border-stone-600 shadow-black/80'
-                                }`}
-                              />
                             </div>
                           )}
 
@@ -1208,27 +1242,6 @@ export default function App() {
                   {playVsEngine ? 'Engine Active' : 'Off'}
                 </button>
               </div>
-
-              {/* Mandatory Capture Toggle: forced "must take" vs optional "can ignore" */}
-              <div className="pt-1 flex items-center justify-between text-xs border-t border-slate-800/80">
-                <span className="text-slate-300 font-medium">
-                  Mandatory Capture
-                  <span className="block text-[10px] text-slate-500 font-normal">
-                    {activeRules.mandatoryCapture ? 'Must take — captures are forced' : 'Optional — a piece may ignore a capture'}
-                  </span>
-                </span>
-                <button
-                  onClick={() => setMandatoryCaptureEnabled(!activeRules.mandatoryCapture)}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold border transition-all ${
-                    activeRules.mandatoryCapture
-                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
-                  }`}
-                  title="Choose whether players are forced to capture or may ignore it"
-                >
-                  {activeRules.mandatoryCapture ? 'Must Take' : 'Can Ignore'}
-                </button>
-              </div>
             </div>
 
             {/* Analysis & Evaluation Overview Card */}
@@ -1413,13 +1426,9 @@ export default function App() {
             <button onClick={() => setShowRulesModal(true)} className="hover:text-slate-300 underline">
               Rules & Mechanics Guide
             </button>
-            <button onClick={handleExportHtml} className="hover:text-slate-300 underline">
-              Standalone Offline HTML
-            </button>
           </div>
         </footer>
       </div>
     </div>
   );
 }
-

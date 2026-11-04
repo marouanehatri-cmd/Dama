@@ -629,17 +629,52 @@ export function getAllMoves(
     return allCaps;
   }
 
-  // No captures available -> return all normal moves
-  const normalMoves: Move[] = [];
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      if (Math.sign(board[r][c]) === player) {
-        normalMoves.push(...getNormalMoves(board, r, c, player, rules));
+  // If mandatoryCapture is false OR no captures exist:
+  const moves: Move[] = [];
+
+  // When capture is NOT mandatory (optional capture mode), player can choose to capture
+  if (maxCap > 0 && !rules.mandatoryCapture) {
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (Math.sign(board[r][c]) === player) {
+          moves.push(...getAllCaptures(board, r, c, player, rules));
+        }
       }
     }
   }
 
-  return normalMoves;
+  // Add all normal moves
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (Math.sign(board[r][c]) === player) {
+        moves.push(...getNormalMoves(board, r, c, player, rules));
+      }
+    }
+  }
+
+  return moves;
+}
+
+/**
+ * Returns positions of all pieces of a player that currently have at least one capture available
+ */
+export function getPiecesWithAvailableCaptures(
+  board: Board,
+  player: number,
+  rules: VariantRules = VARIANTS.moroccan
+): Position[] {
+  const pieces: Position[] = [];
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (Math.sign(board[r][c]) === player) {
+        const caps = getAllCaptures(board, r, c, player, rules);
+        if (caps.length > 0) {
+          pieces.push({ r, c });
+        }
+      }
+    }
+  }
+  return pieces;
 }
 
 /**

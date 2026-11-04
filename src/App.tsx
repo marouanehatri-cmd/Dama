@@ -27,6 +27,7 @@ import {
   ShieldAlert,
   Wind,
   AlertCircle,
+  Lightbulb,
 } from 'lucide-react';
 import { Board, Move, Position, SolverResult, VariantRules } from './engine/types.ts';
 import {
@@ -99,6 +100,9 @@ export default function App() {
     entitledPlayer: 1 | -1;
   }
   const [huffState, setHuffState] = useState<HuffState | null>(null);
+
+  // Indication State (when playing vs engine, hint is hidden until user clicks Indication)
+  const [showIndication, setShowIndication] = useState<boolean>(false);
 
   // Fast Animation States for Move Glide & Capture Pops
   const [animatingPiece, setAnimatingPiece] = useState<{
@@ -252,10 +256,11 @@ export default function App() {
   // Apply a move to the board with smooth, snappy step-by-step animation
   const applyMove = useCallback(
     (move: Move) => {
-      // Clear selection immediately for snappy feel
+      // Clear selection and indication immediately for snappy feel
       setSelectedPos(null);
       setHoveredMove(null);
       setLastMoveMade(move);
+      setShowIndication(false);
 
       // Check if moving player had captures available before making this move
       const piecesThatCouldCapture = getPiecesWithAvailableCaptures(board, turn, activeVariant);
@@ -366,6 +371,7 @@ export default function App() {
     setHumanColor(newGameColor);
     setDepth(newGameDifficulty);
     setPlayVsEngine(true);
+    setShowIndication(false);
     setHistory([]);
     setFuture([]);
     setSelectedPos(null);
@@ -375,22 +381,36 @@ export default function App() {
     setShowNewGameModal(false);
     playSound('move');
     showToast(
-      `⚔️ New match started! You are ${newGameColor === 1 ? 'White (moves 1st)' : 'Black (Engine moves 1st)'}.`
+      `⚔️ Game started! You are ${newGameColor === 1 ? 'White (moves 1st)' : 'Black (Engine moves 1st)'}.`
     );
   }, [newGameSetup, newGameColor, newGameDifficulty, playSound, showToast]);
 
-  // Undo move
+  // Back to previous move (Undo)
   const handleUndo = useCallback(() => {
     if (history.length === 0) return;
-    const last = history[history.length - 1];
-    setFuture(prev => [{ board: cloneBoard(board), turn }, ...prev]);
-    setBoard(last.board);
-    setTurn(last.turn);
-    setHistory(prev => prev.slice(0, prev.length - 1));
+    setShowIndication(false);
+
+    // When playing vs engine: undo back to before user's move (undo 2 plies if user's turn)
+    if (playVsEngine && history.length >= 2 && turn === humanColor) {
+      const targetState = history[history.length - 2];
+      setHistory(prev => prev.slice(0, prev.length - 2));
+      setBoard(targetState.board);
+      setTurn(targetState.turn);
+    } else {
+      const last = history[history.length - 1];
+      setHistory(prev => prev.slice(0, prev.length - 1));
+      setBoard(last.board);
+      setTurn(last.turn);
+    }
+
+    setFuture([]);
     setSelectedPos(null);
     setHoveredMove(null);
     setLastMoveMade(null);
-  }, [history, board, turn]);
+    setHuffState(null);
+    playSound('move');
+    showToast('↩️ Back to previous move');
+  }, [history, board, turn, playVsEngine, humanColor, playSound, showToast]);
 
   // Redo move
   const handleRedo = useCallback(() => {
@@ -479,7 +499,14 @@ export default function App() {
   };
 
   // Compute best move or active hover move for board arrows
-  const activeHighlightedMove = hoveredMove || solverResult?.bestMove || null;
+  // When playing against engine, do not show best move unless user clicks the "Indication" button
+  const activeHighlightedMove = useMemo(() => {
+    if (hoveredMove) return hoveredMove;
+    if (playVsEngine) {
+      return showIndication ? solverResult?.bestMove || null : null;
+    }
+    return solverResult?.bestMove || null;
+  }, [hoveredMove, playVsEngine, showIndication, solverResult]);
 
   // Helper to map board coordinates to SVG coordinates (percentages 0-100)
   const getSquareCenter = useCallback(
@@ -751,81 +778,89 @@ export default function App() {
           </div>
         </header>
 
-        {/* Preset Positions & Options Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13161f] border border-amber-900/30 p-2.5 rounded-xl">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider px-1 flex items-center gap-1.5">
-              <Target className="w-3.5 h-3.5" />
-              Presets:
-            </span>
-            {PRESETS.map(preset => {
-              const isTest = preset.id === 'test_d4_e5_f6';
-              return (
-                <button
-                  key={preset.id}
-                  onClick={() => {
-                    setBoard(preset.board());
-                    setTurn(preset.turn);
-                    setSelectedPos(null);
-                    setHoveredMove(null);
-                    setHistory([]);
-                    setFuture([]);
-                    setHuffState(null);
-                    showToast(`Loaded: ${preset.name}`);
-                  }}
-                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
-                    isTest
-                      ? 'bg-gradient-to-r from-amber-500/25 to-amber-600/30 text-amber-300 border border-amber-500/50 shadow-sm hover:from-amber-500/40 hover:to-amber-600/40'
-                      : 'bg-slate-800/60 text-slate-300 hover:bg-slate-700/80 border border-slate-700/50'
-                  }`}
-                  title={preset.description}
-                >
-                  {preset.name}
-                </button>
-              );
-            })}
-          </div>
+        {/* Preset Positions & Options Bar (Hidden during Game vs Engine for clean focused board) */}
+        {!playVsEngine && (
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13161f] border border-amber-900/30 p-2.5 rounded-xl">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider px-1 flex items-center gap-1.5">
+                <Target className="w-3.5 h-3.5" />
+                Presets:
+              </span>
+              {PRESETS.map(preset => {
+                const isTest = preset.id === 'test_d4_e5_f6';
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => {
+                      setBoard(preset.board());
+                      setTurn(preset.turn);
+                      setSelectedPos(null);
+                      setHoveredMove(null);
+                      setHistory([]);
+                      setFuture([]);
+                      setHuffState(null);
+                      showToast(`Loaded: ${preset.name}`);
+                    }}
+                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                      isTest
+                        ? 'bg-gradient-to-r from-amber-500/25 to-amber-600/30 text-amber-300 border border-amber-500/50 shadow-sm hover:from-amber-500/40 hover:to-amber-600/40'
+                        : 'bg-slate-800/60 text-slate-300 hover:bg-slate-700/80 border border-slate-700/50'
+                    }`}
+                    title={preset.description}
+                  >
+                    {preset.name}
+                  </button>
+                );
+              })}
+            </div>
 
-          {/* Capture Rule: Must Take vs Can Ignore Button */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                setIsMandatoryCapture(v => {
-                  const next = !v;
-                  showToast(
-                    next
-                      ? '🔒 Mandatory Capture: ON (Must take pieces)'
-                      : '🔓 Capture Optional: OFF (Can ignore capture + Huffing enabled)'
-                  );
-                  return next;
-                });
-              }}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm active:scale-95 ${
-                isMandatoryCapture
-                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 hover:bg-amber-500/30'
-                  : 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/30'
-              }`}
-              title="Click to toggle: Must Take pieces vs Can Ignore piece"
-            >
-              {isMandatoryCapture ? (
-                <>
-                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Must Take: ON (Strict)</span>
-                </>
-              ) : (
-                <>
-                  <Wind className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Can Ignore: OFF (Huffing Active)</span>
-                </>
-              )}
-            </button>
+            {/* Capture Rule: Must Take vs Can Ignore Button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setIsMandatoryCapture(v => {
+                    const next = !v;
+                    showToast(
+                      next
+                        ? '🔒 Mandatory Capture: ON (Must take pieces)'
+                        : '🔓 Capture Optional: OFF (Can ignore capture + Huffing enabled)'
+                    );
+                    return next;
+                  });
+                }}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all flex items-center gap-1.5 shadow-sm active:scale-95 ${
+                  isMandatoryCapture
+                    ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 hover:bg-amber-500/30'
+                    : 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/30'
+                }`}
+                title="Click to toggle: Must Take pieces vs Can Ignore piece"
+              >
+                {isMandatoryCapture ? (
+                  <>
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Must Take: ON (Strict)</span>
+                  </>
+                ) : (
+                  <>
+                    <Wind className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Can Ignore: OFF (Huffing Active)</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Main Grid: Left Board / Right Solver Sidebar */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* LEFT: Board & Board Controls */}
-          <div className="lg:col-span-7 flex flex-col items-center space-y-4">
+        {/* Main Grid: When playVsEngine, animate smoothly and show ONLY the board with Indication and Back buttons */}
+        <div
+          className={
+            playVsEngine
+              ? 'w-full max-w-xl mx-auto flex flex-col items-center space-y-4 animate-in fade-in zoom-in-[0.98] duration-300 ease-out'
+              : 'grid grid-cols-1 lg:grid-cols-12 gap-8 items-start animate-in fade-in duration-300'
+          }
+        >
+          {/* Board & Board Controls */}
+          <div className={playVsEngine ? 'w-full flex flex-col items-center space-y-4' : 'lg:col-span-7 flex flex-col items-center space-y-4'}>
             {/* HUFFING DECISION BANNER (حق النفخ في الضامة) */}
             {huffState && huffState.entitledPlayer === turn && (
               <div className="w-full max-w-[500px] bg-gradient-to-r from-red-950/95 via-amber-950/95 to-slate-900/95 border-2 border-amber-500/80 rounded-2xl p-4 shadow-2xl animate-in fade-in slide-in-from-top-3 text-xs text-slate-200 space-y-3">
@@ -888,7 +923,7 @@ export default function App() {
             )}
 
             {/* Top Board Bar: Player Turn Badge & History Controls */}
-            <div className="w-full max-w-[500px] flex items-center justify-between bg-[#151922] px-4 py-2.5 rounded-xl border border-slate-800 text-xs">
+            <div className="w-full max-w-[500px] flex items-center justify-between bg-[#151922] px-4 py-2.5 rounded-xl border border-slate-800 text-xs shadow-md">
               <div className="flex items-center gap-2.5">
                 <div
                   className={`w-3.5 h-3.5 rounded-full border ${
@@ -898,12 +933,20 @@ export default function App() {
                   }`}
                 />
                 <span className="font-semibold text-slate-200">
-                  {turn === 1 ? 'White to Move' : 'Black to Move'}
+                  {playVsEngine
+                    ? turn === humanColor
+                      ? 'Your turn'
+                      : isEngineThinking
+                      ? 'Engine thinking...'
+                      : "Opponent's turn"
+                    : turn === 1
+                    ? 'White to Move'
+                    : 'Black to Move'}
                 </span>
                 {playVsEngine && (
                   <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 flex items-center gap-1">
                     <Swords className="w-3 h-3" />
-                    vs Engine
+                    vs Engine {isEngineThinking && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />}
                   </span>
                 )}
                 {maxCaptureCount > 0 && isMandatoryCapture && (
@@ -913,24 +956,26 @@ export default function App() {
                 )}
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={handleUndo}
-                  disabled={history.length === 0}
-                  className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 transition-colors"
-                  title="Undo Move"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={handleRedo}
-                  disabled={future.length === 0}
-                  className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 transition-colors"
-                  title="Redo Move"
-                >
-                  <RotateCw className="w-4 h-4" />
-                </button>
-              </div>
+              {!playVsEngine && (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleUndo}
+                    disabled={history.length === 0}
+                    className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 transition-colors"
+                    title="Undo Move"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={handleRedo}
+                    disabled={future.length === 0}
+                    className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 transition-colors"
+                    title="Redo Move"
+                  >
+                    <RotateCw className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* THE WOODEN 8x8 CHECKERBOARD */}
@@ -1174,94 +1219,239 @@ export default function App() {
               </div>
             </div>
 
-            {/* Quick Action Toolbar Below Board */}
-            <div className="w-full max-w-[500px] flex flex-wrap items-center justify-between gap-2 bg-[#151922] p-2.5 rounded-xl border border-slate-800 text-xs">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={runSolver}
-                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg flex items-center gap-1.5 shadow-sm transition-all"
-                  title="Run Minimax Solver"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Analyze</span>
-                </button>
-
-                {solverResult?.bestMove && (
+            {/* Controls Below Board */}
+            {playVsEngine ? (
+              /* FOCUSED GAME MODE: Dedicated Indication & Back to previous move buttons */
+              <div className="w-full max-w-[500px] space-y-2.5">
+                {/* Primary Action Buttons: Indication + Back to previous move */}
+                <div className="w-full flex items-center justify-between gap-3 bg-[#151922] p-2.5 rounded-xl border border-amber-900/40 text-xs shadow-xl">
+                  {/* [💡 Indication] button */}
                   <button
-                    onClick={() => applyMove(solverResult.bestMove!)}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-lg flex items-center gap-1.5 border border-slate-700 transition-all"
-                    title="Play Best Move"
+                    onClick={() => {
+                      setShowIndication(prev => {
+                        const next = !prev;
+                        if (next) {
+                          playSound('move');
+                          showToast(
+                            solverResult?.bestMove
+                              ? `💡 Indication: Best move is ${solverResult.bestMove.notation}`
+                              : '💡 Engine calculating indication...'
+                          );
+                        }
+                        return next;
+                      });
+                    }}
+                    className={`flex-1 py-2.5 px-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 ${
+                      showIndication
+                        ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 border border-amber-300 ring-2 ring-amber-400/40'
+                        : 'bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-amber-500/30 hover:border-amber-500/60'
+                    }`}
+                    title="Toggle Indication (hint for the best move)"
                   >
-                    <Play className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Make Best Move</span>
+                    <Lightbulb className={`w-4 h-4 ${showIndication ? 'text-slate-950 fill-slate-950' : 'text-amber-400'}`} />
+                    <span>{showIndication ? 'Hide Indication' : 'Indication'}</span>
                   </button>
-                )}
-              </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setIsEditorOpen(e => !e)}
-                  className={`px-3 py-1.5 rounded-lg border font-medium flex items-center gap-1.5 transition-colors ${
-                    isEditorOpen
-                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                      : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700'
-                  }`}
-                >
-                  <Sliders className="w-3.5 h-3.5" />
-                  <span>{isEditorOpen ? 'Close Editor' : 'Board Editor'}</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setBoard(createEmptyBoard());
-                    setSelectedPos(null);
-                    setHoveredMove(null);
-                    setHistory([]);
-                    setFuture([]);
-                  }}
-                  className="px-2.5 py-1.5 text-slate-400 hover:text-rose-400 transition-colors"
-                  title="Clear Board"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Custom Board Editor Drawer (when toggled) */}
-            {isEditorOpen && (
-              <div className="w-full max-w-[500px] bg-[#1a1f2c] border border-amber-900/40 p-3.5 rounded-xl text-xs space-y-2">
-                <div className="flex items-center justify-between text-slate-300 font-semibold">
-                  <span>Custom Position Tool: Click any dark square to place</span>
-                  <span className="text-[11px] text-amber-400">Editor Active</span>
+                  {/* [↩️ Back to previous move] button */}
+                  <button
+                    onClick={handleUndo}
+                    disabled={history.length === 0 || isEngineThinking}
+                    className="flex-1 py-2.5 px-3 rounded-xl font-bold flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md active:scale-95"
+                    title="Back to previous move (Undo)"
+                  >
+                    <RotateCcw className="w-4 h-4 text-sky-400" />
+                    <span>Back to previous move</span>
+                  </button>
                 </div>
-                <div className="grid grid-cols-5 gap-2 pt-1">
-                  {[
-                    { id: 1, label: 'White Man', icon: '⚪' },
-                    { id: 2, label: 'White King', icon: '👑' },
-                    { id: -1, label: 'Black Man', icon: '⚫' },
-                    { id: -2, label: 'Black King', icon: '🖤' },
-                    { id: 0, label: 'Eraser', icon: '❌' },
-                  ].map(tool => (
+
+                {/* Indication Suggestion Card (Only visible when Indication button is clicked) */}
+                {showIndication && solverResult?.bestMove && (
+                  <div className="w-full bg-gradient-to-r from-amber-950/70 via-[#181e2b] to-slate-900 border border-amber-500/50 p-3 rounded-xl flex items-center justify-between gap-3 text-xs animate-in fade-in slide-in-from-top-1 shadow-lg">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-300 font-bold">
+                        💡
+                      </div>
+                      <div>
+                        <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                          <span>Suggested: {solverResult.bestMove.notation}</span>
+                          {solverResult.bestMove.isPromotion && (
+                            <span className="text-[10px] bg-amber-400 text-black px-1 rounded font-extrabold">CROWN</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {solverResult.bestMove.path.map(p => posToNotation(p.r, p.c)).join(' → ')}
+                          {solverResult.bestMove.captured.length > 0 && ` (${solverResult.bestMove.captured.length} piece captured)`}
+                        </div>
+                      </div>
+                    </div>
                     <button
-                      key={tool.id}
-                      onClick={() => setEditorTool(tool.id)}
-                      className={`py-1.5 px-2 rounded-lg border flex flex-col items-center gap-1 text-[11px] font-medium transition-all ${
-                        editorTool === tool.id
-                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-sm'
-                          : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:bg-slate-700'
+                      onClick={() => applyMove(solverResult.bestMove!)}
+                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs shadow-md active:scale-95 transition-all flex items-center gap-1"
+                      title="Play this indicated move"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-slate-950" />
+                      <span>Play Move</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* In-Game Companion Bar: Must Take Toggle, Flip, New Game, Exit */}
+                <div className="w-full flex flex-wrap items-center justify-between gap-2 bg-[#121620] px-3 py-2 rounded-xl border border-slate-800/80 text-xs">
+                  <button
+                    onClick={() => {
+                      setIsMandatoryCapture(v => {
+                        const next = !v;
+                        showToast(
+                          next
+                            ? '🔒 Mandatory Capture: ON (Must take pieces)'
+                            : '🔓 Capture Optional: OFF (Can ignore capture + Huffing enabled)'
+                        );
+                        return next;
+                      });
+                    }}
+                    className={`px-2.5 py-1 rounded-lg border font-semibold flex items-center gap-1.5 transition-all ${
+                      isMandatoryCapture
+                        ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                        : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    }`}
+                    title="Toggle Mandatory Capture vs Can Ignore"
+                  >
+                    {isMandatoryCapture ? (
+                      <>
+                        <ShieldAlert className="w-3 h-3 text-amber-400" />
+                        <span>Must Take: ON</span>
+                      </>
+                    ) : (
+                      <>
+                        <Wind className="w-3 h-3 text-emerald-400" />
+                        <span>Can Ignore: OFF</span>
+                      </>
+                    )}
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsFlipped(f => !f)}
+                      className="px-2.5 py-1 text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700 rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors"
+                      title="Flip perspective"
+                    >
+                      <RefreshCw className="w-3 h-3 text-sky-400" />
+                      <span>Flip</span>
+                    </button>
+
+                    <button
+                      onClick={() => setShowNewGameModal(true)}
+                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg font-medium flex items-center gap-1.5 transition-all"
+                    >
+                      <Swords className="w-3 h-3 text-amber-400" />
+                      <span>New Game</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setPlayVsEngine(false);
+                        showToast('Exited to Analysis Mode');
+                      }}
+                      className="px-2 py-1 text-slate-400 hover:text-slate-200 text-[11px] underline"
+                    >
+                      Exit to Analysis
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* ANALYSIS MODE: Standard Quick Action Toolbar & Custom Position Editor */
+              <>
+                <div className="w-full max-w-[500px] flex flex-wrap items-center justify-between gap-2 bg-[#151922] p-2.5 rounded-xl border border-slate-800 text-xs">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={runSolver}
+                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg flex items-center gap-1.5 shadow-sm transition-all"
+                      title="Run Minimax Solver"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Analyze</span>
+                    </button>
+
+                    {solverResult?.bestMove && (
+                      <button
+                        onClick={() => applyMove(solverResult.bestMove!)}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-lg flex items-center gap-1.5 border border-slate-700 transition-all"
+                        title="Play Best Move"
+                      >
+                        <Play className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Make Best Move</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsEditorOpen(e => !e)}
+                      className={`px-3 py-1.5 rounded-lg border font-medium flex items-center gap-1.5 transition-colors ${
+                        isEditorOpen
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                          : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700'
                       }`}
                     >
-                      <span className="text-base">{tool.icon}</span>
-                      <span>{tool.label}</span>
+                      <Sliders className="w-3.5 h-3.5" />
+                      <span>{isEditorOpen ? 'Close Editor' : 'Board Editor'}</span>
                     </button>
-                  ))}
+
+                    <button
+                      onClick={() => {
+                        setBoard(createEmptyBoard());
+                        setSelectedPos(null);
+                        setHoveredMove(null);
+                        setHistory([]);
+                        setFuture([]);
+                      }}
+                      className="px-2.5 py-1.5 text-slate-400 hover:text-rose-400 transition-colors"
+                      title="Clear Board"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+
+                {/* Custom Board Editor Drawer (when toggled) */}
+                {isEditorOpen && (
+                  <div className="w-full max-w-[500px] bg-[#1a1f2c] border border-amber-900/40 p-3.5 rounded-xl text-xs space-y-2">
+                    <div className="flex items-center justify-between text-slate-300 font-semibold">
+                      <span>Custom Position Tool: Click any dark square to place</span>
+                      <span className="text-[11px] text-amber-400">Editor Active</span>
+                    </div>
+                    <div className="grid grid-cols-5 gap-2 pt-1">
+                      {[
+                        { id: 1, label: 'White Man', icon: '⚪' },
+                        { id: 2, label: 'White King', icon: '👑' },
+                        { id: -1, label: 'Black Man', icon: '⚫' },
+                        { id: -2, label: 'Black King', icon: '🖤' },
+                        { id: 0, label: 'Eraser', icon: '❌' },
+                      ].map(tool => (
+                        <button
+                          key={tool.id}
+                          onClick={() => setEditorTool(tool.id)}
+                          className={`py-1.5 px-2 rounded-lg border flex flex-col items-center gap-1 text-[11px] font-medium transition-all ${
+                            editorTool === tool.id
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-sm'
+                              : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:bg-slate-700'
+                          }`}
+                        >
+                          <span className="text-base">{tool.icon}</span>
+                          <span>{tool.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
-          {/* RIGHT: Solver Controls & All Candidate Possibilities List */}
-          <div className="lg:col-span-5 space-y-4">
+          {/* RIGHT: Solver Controls & All Candidate Possibilities List (Hidden during Play vs Engine) */}
+          {!playVsEngine && (
+            <div className="lg:col-span-5 space-y-4">
             {/* Engine Setup Card */}
             <div className="p-4 bg-[#141822] border border-slate-800 rounded-2xl shadow-xl space-y-4">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
@@ -1519,7 +1709,8 @@ export default function App() {
               </div>
             </div>
           </div>
-        </div>
+        )}
+      </div>
 
         {/* Informational Moroccan Dama Card */}
         <footer className="pt-4 border-t border-slate-800/80 flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-slate-500">

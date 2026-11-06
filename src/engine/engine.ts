@@ -3,13 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Board, EngineStats, Move, Position, SolverResult, VariantRules, PonderedMoveResult } from './types.ts';
+import {
+  Board,
+  EngineDifficulty,
+  EngineStats,
+  Move,
+  Position,
+  SolverResult,
+  VariantRules,
+  PonderedMoveResult,
+} from './types.ts';
+import { probeOpeningBook, getBoardSignature } from './openingBook.ts';
 
 export const VARIANTS: Record<string, VariantRules> = {
   moroccan: {
     id: 'moroccan',
     name: 'Moroccan Dama (الضامة المغربية)',
-    description: 'Authentic Moroccan rules: Men move and capture forward only (no backward captures). Flying kings move and sweep diagonals in all directions. Mandatory majority capture. Immediate promotion turn-end.',
+    description:
+      'Authentic Moroccan rules: Men move forward only. Flying kings move and sweep diagonals in all directions. Mandatory majority capture. Immediate promotion turn-end.',
     menCaptureBackwards: false,
     mandatoryCapture: true,
     maxCaptureMajority: true,
@@ -33,7 +44,7 @@ export const VARIANTS: Record<string, VariantRules> = {
   spanish: {
     id: 'spanish',
     name: 'Spanish Dama (Damas Españolas)',
-    description: 'Men move and capture forward only. Flying king. Majority capture rule with king quality tiebreak.',
+    description: 'Men move forward only. Flying king. Majority capture rule with king quality tiebreak.',
     menCaptureBackwards: false,
     mandatoryCapture: true,
     maxCaptureMajority: true,
@@ -45,7 +56,7 @@ export const VARIANTS: Record<string, VariantRules> = {
   american: {
     id: 'american',
     name: 'American / English Checkers',
-    description: 'Men move and capture forward only. Short king (1 step). Mandatory capture without majority rule.',
+    description: 'Men move forward only. Short king (1 step). Mandatory capture without majority rule.',
     menCaptureBackwards: false,
     mandatoryCapture: true,
     maxCaptureMajority: false,
@@ -96,11 +107,8 @@ export function createStartingBoard(): Board {
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       if (isDarkSquare(r, c)) {
-        if (r < 3) {
-          board[r][c] = -1; // Black man
-        } else if (r > 4) {
-          board[r][c] = 1; // White man
-        }
+        if (r < 3) board[r][c] = -1; // Black man
+        else if (r > 4) board[r][c] = 1; // White man
       }
     }
   }
@@ -108,8 +116,8 @@ export function createStartingBoard(): Board {
 }
 
 /**
- * Specific Test Position requested:
- * "White has 1 king at d4, Black has 2 men at e5, f6 - white to move should win by capturing both"
+ * Test Position:
+ * White king at d4 captures both black men at e5, f6
  */
 export function createTestPosition(): Board {
   const board = createEmptyBoard();
@@ -153,11 +161,9 @@ export const PRESETS: PresetPosition[] = [
     description: 'White forces Black to take the longer capture path of 3 pieces instead of 2.',
     board: () => {
       const b = createEmptyBoard();
-      // White pieces
       b[6][1] = 1; // b2
       b[4][3] = 1; // d4
       b[4][5] = 1; // f4
-      // Black pieces
       b[2][3] = -1; // d6
       b[2][5] = -1; // f6
       b[3][2] = -1; // c5
@@ -172,8 +178,8 @@ export const PRESETS: PresetPosition[] = [
     description: 'White King at a1 executes a 4-hop perimeter sweep.',
     board: () => {
       const b = createEmptyBoard();
-      const a1 = notationToPos('a1'); // 7, 0
-      b[a1.r][a1.c] = 2; // White king
+      const a1 = notationToPos('a1');
+      b[a1.r][a1.c] = 2;
       b[notationToPos('c3').r][notationToPos('c3').c] = -1;
       b[notationToPos('f6').r][notationToPos('f6').c] = -1;
       b[notationToPos('f2').r][notationToPos('f2').c] = -1;
@@ -196,21 +202,31 @@ export const PRESETS: PresetPosition[] = [
   },
 ];
 
-/** Check if position is inside board boundaries */
 function inBounds(r: number, c: number): boolean {
   return r >= 0 && r < 8 && c >= 0 && c < 8;
 }
 
-/** Check if a position is in a list */
 function hasPos(list: Position[], r: number, c: number): boolean {
   return list.some(p => p.r === r && p.c === c);
 }
 
+function formatNotation(
+  from: Position,
+  path: Position[],
+  captured: Position[],
+  isPromotion: boolean
+): string {
+  const fromStr = posToNotation(from.r, from.c);
+  if (captured.length === 0) {
+    const toStr = path.length > 1 ? posToNotation(path[path.length - 1].r, path[path.length - 1].c) : fromStr;
+    return `${fromStr}-${toStr}${isPromotion ? '=K' : ''}`;
+  }
+  const hopsStr = path.slice(1).map(p => posToNotation(p.r, p.c)).join(':');
+  return `${fromStr}:${hopsStr} (x${captured.length})${isPromotion ? '=K' : ''}`;
+}
+
 /**
- * STEP 2 requirement:
- * function getAllCaptures(board, r, c, player, rules)
- * => returns array of { path: [positions], captured: [positions], finalBoard }
- * Uses recursion + backtracking, explores all branches.
+ * Generate all captures for a specific piece using recursion and backtracking
  */
 export function getAllCaptures(
   board: Board,
@@ -227,20 +243,14 @@ export function getAllCaptures(
   const startPos: Position = { r, c };
 
   if (!isKing) {
-    // --- MAN CAPTURES ---
-    // In Moroccan Dama, men capture forward OR backward
+    // Man captures forward (in Moroccan rules men only move & capture forward)
     const directions: [number, number][] = rules.menCaptureBackwards
       ? [[-1, -1], [-1, 1], [1, -1], [1, 1]]
       : player === 1
-        ? [[-1, -1], [-1, 1]] // White moves up
-        : [[1, -1], [1, 1]];  // Black moves down
+      ? [[-1, -1], [-1, 1]]
+      : [[1, -1], [1, 1]];
 
-    function recurseMan(
-      currR: number,
-      currC: number,
-      path: Position[],
-      captured: Position[]
-    ) {
+    function recurseMan(currR: number, currC: number, path: Position[], captured: Position[]) {
       let foundContinuation = false;
 
       for (const [dr, dc] of directions) {
@@ -252,29 +262,21 @@ export function getAllCaptures(
         if (!inBounds(landR, landC)) continue;
 
         const enemyPiece = board[enemyR][enemyC];
-        // Enemy piece belongs to opponent and hasn't been captured already in this path
-        if (
-          Math.sign(enemyPiece) === -player &&
-          !hasPos(captured, enemyR, enemyC)
-        ) {
-          // Landing square must be empty (or start square if full loop) and not already occupied/captured
-          const landingEmpty = (board[landR][landC] === 0 || (landR === r && landC === c)) &&
-            !hasPos(captured, landR, landC);
+        if (Math.sign(enemyPiece) === -player && !hasPos(captured, enemyR, enemyC)) {
+          const landingEmpty =
+            (board[landR][landC] === 0 || (landR === r && landC === c)) && !hasPos(captured, landR, landC);
 
           if (landingEmpty) {
             foundContinuation = true;
             const newPath = [...path, { r: landR, c: landC }];
             const newCaptured = [...captured, { r: enemyR, c: enemyC }];
-
-            // Moroccan Rule 6: Promotion when reaching last row terminates the turn immediately
             const reachesPromotion = (player === 1 && landR === 0) || (player === -1 && landR === 7);
 
             if (reachesPromotion && rules.promotionEndsTurn) {
-              // Promoted, turn ends immediately
               const finalBoard = cloneBoard(board);
               finalBoard[r][c] = 0;
               for (const p of newCaptured) finalBoard[p.r][p.c] = 0;
-              finalBoard[landR][landC] = player * 2; // King
+              finalBoard[landR][landC] = player * 2; // Crowning to King
 
               results.push({
                 id: `${posToNotation(r, c)}-${newPath.map(p => posToNotation(p.r, p.c)).join(':')}`,
@@ -287,14 +289,12 @@ export function getAllCaptures(
                 notation: formatNotation(startPos, newPath, newCaptured, true),
               });
             } else {
-              // Continue multi-jump exploration
               recurseMan(landR, landC, newPath, newCaptured);
             }
           }
         }
       }
 
-      // If no further hops from this position and we have made at least one capture:
       if (!foundContinuation && captured.length > 0) {
         const reachesPromotion = (player === 1 && currR === 0) || (player === -1 && currR === 7);
         const finalBoard = cloneBoard(board);
@@ -317,21 +317,14 @@ export function getAllCaptures(
 
     recurseMan(r, c, [startPos], []);
   } else {
-    // --- KING (DAMA) CAPTURES ---
+    // Flying King captures (diagonals in all 4 directions)
     const kingDirections: [number, number][] = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
 
-    function recurseKing(
-      currR: number,
-      currC: number,
-      path: Position[],
-      captured: Position[]
-    ) {
+    function recurseKing(currR: number, currC: number, path: Position[], captured: Position[]) {
       let foundContinuation = false;
 
       for (const [dr, dc] of kingDirections) {
-        // In flying king mechanics:
         if (rules.flyingKing) {
-          // Slide along diagonal until first obstacle
           let step = 1;
           const capturedInDir: Position[] = [];
 
@@ -340,16 +333,13 @@ export function getAllCaptures(
             const checkC = currC + step * dc;
             const sqPiece = board[checkR][checkC];
 
-            // If square has friendly piece or already captured piece, stop ray
             if (Math.sign(sqPiece) === player || hasPos(captured, checkR, checkC)) {
               break;
             }
 
-            // If square has opponent piece
             if (Math.sign(sqPiece) === -player) {
               capturedInDir.push({ r: checkR, c: checkC });
 
-              // If kingSweepsLine is enabled (Moroccan rule), we can sweep consecutive enemy pieces
               if (rules.kingSweepsLine) {
                 let lookAhead = step + 1;
                 while (inBounds(currR + lookAhead * dr, currC + lookAhead * dc)) {
@@ -364,41 +354,30 @@ export function getAllCaptures(
                 step = lookAhead - 1;
               }
 
-              // Now explore all empty landing squares beyond the captured piece(s)
               let landStep = step + 1;
-              let anyLandingValid = false;
-
               while (inBounds(currR + landStep * dr, currC + landStep * dc)) {
                 const landR = currR + landStep * dr;
                 const landC = currC + landStep * dc;
-                const landPiece = board[landR][landC];
 
-                // Must be empty (or start position) and not in captured list
-                const isEmpty = (landPiece === 0 || (landR === r && landC === c)) &&
-                  !hasPos(captured, landR, landC);
+                if (board[landR][landC] !== 0 && !(landR === r && landC === c)) {
+                  break;
+                }
 
-                if (!isEmpty) break; // Obstacle hit
-
-                anyLandingValid = true;
-                foundContinuation = true;
-
-                const newPath = [...path, { r: landR, c: landC }];
-                const newCaptured = [...captured, ...capturedInDir];
-
-                // Recursively search for subsequent turns / jumps
-                recurseKing(landR, landC, newPath, newCaptured);
+                if (!hasPos(captured, landR, landC)) {
+                  foundContinuation = true;
+                  const newPath = [...path, { r: landR, c: landC }];
+                  const newCaptured = [...captured, ...capturedInDir];
+                  recurseKing(landR, landC, newPath, newCaptured);
+                }
 
                 landStep++;
               }
-
-              // Finished this diagonal ray after encountering the enemy piece(s)
               break;
             }
-
             step++;
           }
         } else {
-          // Non-flying king (e.g. American Checkers: 1-step leap)
+          // American Checkers 1-step leap
           const enemyR = currR + dr;
           const enemyC = currC + dc;
           const landR = currR + 2 * dr;
@@ -406,12 +385,9 @@ export function getAllCaptures(
 
           if (inBounds(landR, landC)) {
             const enemyPiece = board[enemyR][enemyC];
-            if (
-              Math.sign(enemyPiece) === -player &&
-              !hasPos(captured, enemyR, enemyC)
-            ) {
-              const landingEmpty = (board[landR][landC] === 0 || (landR === r && landC === c)) &&
-                !hasPos(captured, landR, landC);
+            if (Math.sign(enemyPiece) === -player && !hasPos(captured, enemyR, enemyC)) {
+              const landingEmpty =
+                (board[landR][landC] === 0 || (landR === r && landC === c)) && !hasPos(captured, landR, landC);
 
               if (landingEmpty) {
                 foundContinuation = true;
@@ -424,7 +400,6 @@ export function getAllCaptures(
         }
       }
 
-      // If no further jumps from here and at least 1 capture was made, record final state
       if (!foundContinuation && captured.length > 0) {
         const finalBoard = cloneBoard(board);
         finalBoard[r][c] = 0;
@@ -447,42 +422,19 @@ export function getAllCaptures(
     recurseKing(r, c, [startPos], []);
   }
 
-  // Deduplicate moves that arrive at the same destination with identical captures
+  // Deduplicate identical captures
   const uniqueMoves = new Map<string, Move>();
   for (const move of results) {
-    const key = `${move.from.r},${move.from.c}->${move.to.r},${move.to.c}_cap:${move.captured.map(p => `${p.r},${p.c}`).sort().join(';')}`;
+    const key = `${move.from.r},${move.from.c}->${move.to.r},${move.to.c}_cap:${move.captured
+      .map(p => `${p.r},${p.c}`)
+      .sort()
+      .join(';')}`;
     if (!uniqueMoves.has(key) || move.path.length > (uniqueMoves.get(key)?.path.length || 0)) {
       uniqueMoves.set(key, move);
     }
   }
 
   return Array.from(uniqueMoves.values());
-}
-
-/**
- * STEP 2 requirement:
- * Implement findMaxCaptureLength(board, player, rules) first
- * Finds the maximum number of pieces any piece of the player can capture
- */
-export function findMaxCaptureLength(
-  board: Board,
-  player: number,
-  rules: VariantRules = VARIANTS.moroccan
-): number {
-  let maxLength = 0;
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      if (Math.sign(board[r][c]) === player) {
-        const captures = getAllCaptures(board, r, c, player, rules);
-        for (const cap of captures) {
-          if (cap.captured.length > maxLength) {
-            maxLength = cap.captured.length;
-          }
-        }
-      }
-    }
-  }
-  return maxLength;
 }
 
 /**
@@ -503,8 +455,7 @@ function getNormalMoves(
   const from: Position = { r, c };
 
   if (!isKing) {
-    // Men move 1 step diagonally forward
-    const forwardDr = player === 1 ? -1 : 1; // White moves up (-1), Black moves down (+1)
+    const forwardDr = player === 1 ? -1 : 1;
     const forwardCols = [c - 1, c + 1];
 
     for (const targetC of forwardCols) {
@@ -529,7 +480,6 @@ function getNormalMoves(
       }
     }
   } else {
-    // King moves
     const directions: [number, number][] = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
 
     for (const [dr, dc] of directions) {
@@ -539,7 +489,7 @@ function getNormalMoves(
           const targetR = r + step * dr;
           const targetC = c + step * dc;
 
-          if (board[targetR][targetC] !== 0) break; // Blocked
+          if (board[targetR][targetC] !== 0) break;
 
           const finalBoard = cloneBoard(board);
           finalBoard[r][c] = 0;
@@ -560,7 +510,6 @@ function getNormalMoves(
           step++;
         }
       } else {
-        // American Checkers: 1 step diagonal
         const targetR = r + dr;
         const targetC = c + dc;
         if (inBounds(targetR, targetC) && board[targetR][targetC] === 0) {
@@ -588,42 +537,30 @@ function getNormalMoves(
 }
 
 /**
- * STEP 2 requirement:
- * function getAllMoves(board, player, rules)
- * => If captures exist, return ONLY captures with max length (MAX capture rule)
- * => else normal moves
-/**
- * STEP 2 requirement & Fix 1:
- * getAllMoves(board, color):
+ * 1. getAllMoves(board, color):
  * - Generate ALL full capture chains first.
  * - If captures exist, find maxCaptured = max length of capture chains.
  * - Keep ONLY captures where length == maxCaptured (Majority Rule).
  * - Delete all quiet moves if any capture exists.
  * - If no captures, return all quiet moves.
- * - Must return >2 moves in starting position.
  */
 export function getAllMoves(
   board: Board,
   player: number,
   rules: VariantRules = VARIANTS.moroccan
 ): Move[] {
-  // 1. Generate ALL full capture chains first
   const allCaptures: Move[] = [];
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       if (Math.sign(board[r][c]) === player) {
         const pieceCaps = getAllCaptures(board, r, c, player, rules);
-        for (const cap of pieceCaps) {
-          allCaptures.push(cap);
-        }
+        for (const cap of pieceCaps) allCaptures.push(cap);
       }
     }
   }
 
-  // 2. If captures exist:
   if (allCaptures.length > 0) {
     if (rules.mandatoryCapture) {
-      // Find maxCaptured = max length of capture chains
       let maxCaptured = 0;
       for (const cap of allCaptures) {
         if (cap.captured.length > maxCaptured) {
@@ -631,12 +568,10 @@ export function getAllMoves(
         }
       }
 
-      // Keep ONLY captures where length == maxCaptured (Majority Rule)
       let majorityCaps = rules.maxCaptureMajority
         ? allCaptures.filter(cap => cap.captured.length === maxCaptured)
         : allCaptures;
 
-      // Spanish tiebreak rule if enabled: prefer capturing most kings
       if (rules.kingQualityTiebreak && majorityCaps.length > 1) {
         const maxKings = Math.max(
           ...majorityCaps.map(m => m.captured.filter(p => Math.abs(board[p.r][p.c]) === 2).length)
@@ -646,10 +581,8 @@ export function getAllMoves(
         );
       }
 
-      // Delete all quiet moves if any capture exists
       return majorityCaps;
     } else {
-      // When capture is NOT mandatory (optional capture mode), player can choose to capture or move quietly
       const quietMoves: Move[] = [];
       for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
@@ -662,7 +595,6 @@ export function getAllMoves(
     }
   }
 
-  // 3. If no captures exist, return all quiet moves
   const quietMoves: Move[] = [];
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
@@ -675,9 +607,25 @@ export function getAllMoves(
   return quietMoves;
 }
 
-/**
- * Returns positions of all pieces of a player that currently have at least one capture available
- */
+export function findMaxCaptureLength(
+  board: Board,
+  player: number,
+  rules: VariantRules = VARIANTS.moroccan
+): number {
+  let maxLength = 0;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (Math.sign(board[r][c]) === player) {
+        const captures = getAllCaptures(board, r, c, player, rules);
+        for (const cap of captures) {
+          if (cap.captured.length > maxLength) maxLength = cap.captured.length;
+        }
+      }
+    }
+  }
+  return maxLength;
+}
+
 export function getPiecesWithAvailableCaptures(
   board: Board,
   player: number,
@@ -688,19 +636,13 @@ export function getPiecesWithAvailableCaptures(
     for (let c = 0; c < 8; c++) {
       if (Math.sign(board[r][c]) === player) {
         const caps = getAllCaptures(board, r, c, player, rules);
-        if (caps.length > 0) {
-          pieces.push({ r, c });
-        }
+        if (caps.length > 0) pieces.push({ r, c });
       }
     }
   }
   return pieces;
 }
 
-/**
- * Count function requested:
- * totalPossibilities = all moves count + all capture continuations
- */
 export function countTotalPossibilities(
   board: Board,
   player: number,
@@ -713,53 +655,110 @@ export function countTotalPossibilities(
         const caps = getAllCaptures(board, r, c, player, rules);
         const normals = getNormalMoves(board, r, c, player, rules);
         count += caps.length + normals.length;
-        for (const cap of caps) {
-          // Add intermediate hops
-          if (cap.path.length > 2) {
-            count += cap.path.length - 2;
-          }
-        }
       }
     }
   }
   return Math.max(count, getAllMoves(board, player, rules).length);
 }
 
-/**
- * Format algebraic move notation: e.g. "d4:g7 (x2)"
- */
-function formatNotation(
-  from: Position,
-  path: Position[],
-  captured: Position[],
-  isPromotion: boolean
-): string {
-  const fromStr = posToNotation(from.r, from.c);
-  if (captured.length === 0) {
-    const toStr = path.length > 1 ? posToNotation(path[path.length - 1].r, path[path.length - 1].c) : fromStr;
-    return `${fromStr}-${toStr}${isPromotion ? '=K' : ''}`;
-  }
+// =========================================================================
+// ZOBRIST HASHING & 1,000,000-ENTRY TRANSPOSITION TABLE
+// =========================================================================
+const TT_SIZE = 1048576; // 2^20 entries (~1 Million entries)
+const TT_MASK = TT_SIZE - 1;
 
-  const hopsStr = path.slice(1).map(p => posToNotation(p.r, p.c)).join(':');
-  return `${fromStr}:${hopsStr} (x${captured.length})${isPromotion ? '=K' : ''}`;
+// Flat TypedArrays for O(1) reads/writes with ZERO garbage collection overhead
+const ttKey = new Int32Array(TT_SIZE);
+const ttDepth = new Int8Array(TT_SIZE);
+const ttScore = new Int32Array(TT_SIZE);
+const ttFlag = new Uint8Array(TT_SIZE); // 0: empty, 1: EXACT, 2: LOWER, 3: UPPER
+const ttBestMove = new Array<Move | null>(TT_SIZE);
+
+// Zobrist pseudo-random table (64 squares x 5 piece types)
+const ZOBRIST_TABLE = new Int32Array(64 * 5);
+const ZOBRIST_TURN = 0x55aa55aa;
+
+// Deterministic seed for reproducible Zobrist tables
+(function initZobrist() {
+  let seed = 123456789;
+  for (let i = 0; i < 64 * 5; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    ZOBRIST_TABLE[i] = seed;
+  }
+})();
+
+export function computeZobrist(board: Board, turn: 1 | -1): number {
+  let h = turn === 1 ? ZOBRIST_TURN : 0;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if ((r + c) % 2 === 1) {
+        const p = board[r][c];
+        if (p !== 0) {
+          const pieceIdx = p === 1 ? 0 : p === 2 ? 1 : p === -1 ? 2 : 3;
+          h ^= ZOBRIST_TABLE[(r * 8 + c) * 5 + pieceIdx];
+        }
+      }
+    }
+  }
+  return h;
 }
 
+export function clearTranspositionTable() {
+  ttKey.fill(0);
+  ttDepth.fill(0);
+  ttScore.fill(0);
+  ttFlag.fill(0);
+  ttBestMove.fill(null);
+}
+
+// Move Ordering heuristics: Killer moves [ply][2] & History table
+const killerMoves: [Move | null, Move | null][] = Array.from({ length: 40 }, () => [null, null]);
+const historyTable = new Int32Array(64 * 64);
+
+export function resetMoveOrdering() {
+  for (let i = 0; i < 40; i++) {
+    killerMoves[i][0] = null;
+    killerMoves[i][1] = null;
+  }
+  historyTable.fill(0);
+}
+
+function updateKillerAndHistory(move: Move, ply: number, depth: number) {
+  if (ply < 40) {
+    if (killerMoves[ply][0]?.id !== move.id) {
+      killerMoves[ply][1] = killerMoves[ply][0];
+      killerMoves[ply][0] = move;
+    }
+  }
+  const fromIdx = move.from.r * 8 + move.from.c;
+  const toIdx = move.to.r * 8 + move.to.c;
+  historyTable[fromIdx * 64 + toIdx] += depth * depth;
+}
+
+// =========================================================================
+// 4. SUPER-HARD EVALUATION & 3. ENDGAME EVALUATION
+// =========================================================================
+
 /**
- * Fix 3: Static Board Evaluation function
- * - ONLY return +100000 if opponent (Black) has 0 pieces OR opponent has 0 legal moves.
- * - ONLY return -100000 if we (White) have 0 pieces OR we have 0 legal moves.
- * - Otherwise return normal score:
- *   Man = 100, King = 300
- *   +15 if man is on row close to promotion (row 1 or 2 for White; row 5 or 6 for Black)
- *   +10 if piece is in center squares (rows 3, 4; cols 2, 3, 4, 5)
- *   +20 if piece is on back rank for defense (row 7 for White; row 0 for Black)
- *   +5 * (mobility) (White legal moves - Black legal moves)
+ * Super-Hard Evaluation Function:
+ * - Man = 100, King = 350
+ * - +30 for advanced man on 6th/7th rank
+ * - +25 for King in center in endgame
+ * - +60 for creating a fork (attacks 2 pieces)
+ * - +40 for a trapped opponent piece (0 moves)
+ * - -50 if back rank is empty (no defense)
+ * - +15 for mobility difference * 2
+ * - +1000 for forced capture chain that wins a King
  */
 export function evaluateBoard(board: Board, rules: VariantRules = VARIANTS.moroccan): number {
   let whitePieces = 0;
   let blackPieces = 0;
+  let whiteKings = 0;
+  let blackKings = 0;
   let whiteScore = 0;
   let blackScore = 0;
+  let whiteBackRankCount = 0;
+  let blackBackRankCount = 0;
 
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
@@ -769,65 +768,775 @@ export function evaluateBoard(board: Board, rules: VariantRules = VARIANTS.moroc
       if (piece > 0) {
         whitePieces++;
         if (piece === 1) {
-          // Man = 100
           whiteScore += 100;
-          // +15 if man is on row close to promotion (row 1 or 2, advancing toward row 0)
-          if (r === 1 || r === 2) whiteScore += 15;
-          // +20 if piece is on back rank (defense)
-          if (r === 7) whiteScore += 20;
+          // +30 for advanced man on 6th/7th rank (r=2 is 6th rank, r=1 is 7th rank)
+          if (r === 1 || r === 2) whiteScore += 30;
+          if (r === 7) whiteBackRankCount++;
         } else if (piece === 2) {
-          // King = 300
-          whiteScore += 300;
-        }
-        // +10 if piece is in center squares
-        if ((r === 3 || r === 4) && c >= 2 && c <= 5) {
-          whiteScore += 10;
+          whiteKings++;
+          whiteScore += 350;
+          // +25 for King in center in endgame
+          if (whitePieces + blackPieces <= 8 && r >= 2 && r <= 5 && c >= 2 && c <= 5) {
+            whiteScore += 25;
+          }
         }
       } else {
         blackPieces++;
         if (piece === -1) {
-          // Man = 100
           blackScore += 100;
-          // +15 if man is on row close to promotion (row 5 or 6, advancing toward row 7)
-          if (r === 5 || r === 6) blackScore += 15;
-          // +20 if piece is on back rank (defense)
-          if (r === 0) blackScore += 20;
+          // +30 for advanced man on 6th/7th rank (r=5 is 6th rank, r=6 is 7th rank)
+          if (r === 5 || r === 6) blackScore += 30;
+          if (r === 0) blackBackRankCount++;
         } else if (piece === -2) {
-          // King = 300
-          blackScore += 300;
-        }
-        // +10 if piece is in center squares
-        if ((r === 3 || r === 4) && c >= 2 && c <= 5) {
-          blackScore += 10;
+          blackKings++;
+          blackScore += 350;
+          // +25 for King in center in endgame
+          if (whitePieces + blackPieces <= 8 && r >= 2 && r <= 5 && c >= 2 && c <= 5) {
+            blackScore += 25;
+          }
         }
       }
     }
   }
 
-  // ONLY return +100000 if opponent has 0 pieces
+  // Terminal thresholds
   if (whitePieces > 0 && blackPieces === 0) return 100000;
-  // ONLY return -100000 if we have 0 pieces
   if (blackPieces > 0 && whitePieces === 0) return -100000;
   if (whitePieces === 0 && blackPieces === 0) return 0;
 
-  // Mobility check: +100000 if opponent has 0 legal moves, -100000 if we have 0 legal moves
+  // Back rank empty penalty (-50)
+  if (whiteBackRankCount === 0) whiteScore -= 50;
+  if (blackBackRankCount === 0) blackScore -= 50;
+
   const whiteMoves = getAllMoves(board, 1, rules);
-  if (whiteMoves.length === 0) return -100000; // White has 0 legal moves -> lost!
+  if (whiteMoves.length === 0) return -100000;
 
   const blackMoves = getAllMoves(board, -1, rules);
-  if (blackMoves.length === 0) return 100000; // Black has 0 legal moves -> won!
+  if (blackMoves.length === 0) return 100000;
 
-  // +5 * (mobility)
-  whiteScore += 5 * whiteMoves.length;
-  blackScore += 5 * blackMoves.length;
+  // Mobility bonus: +15 * mobility difference * 2 (+30 * diff)
+  whiteScore += 30 * whiteMoves.length;
+  blackScore += 30 * blackMoves.length;
+
+  // King win bonus (+1000 for capture chain winning a King)
+  for (const m of whiteMoves) {
+    if (m.captured.some(p => Math.abs(board[p.r][p.c]) === 2)) {
+      whiteScore += 1000;
+      break;
+    }
+  }
+  for (const m of blackMoves) {
+    if (m.captured.some(p => Math.abs(board[p.r][p.c]) === 2)) {
+      blackScore += 1000;
+      break;
+    }
+  }
+
+  // Fork bonus: +60 if one piece attacks 2 pieces
+  const whiteAttackCounts = new Map<string, number>();
+  for (const m of whiteMoves) {
+    if (m.captured.length > 0) {
+      const key = `${m.from.r},${m.from.c}`;
+      whiteAttackCounts.set(key, (whiteAttackCounts.get(key) || 0) + 1);
+    }
+  }
+  for (const count of whiteAttackCounts.values()) {
+    if (count >= 2) {
+      whiteScore += 60;
+      break;
+    }
+  }
+
+  const blackAttackCounts = new Map<string, number>();
+  for (const m of blackMoves) {
+    if (m.captured.length > 0) {
+      const key = `${m.from.r},${m.from.c}`;
+      blackAttackCounts.set(key, (blackAttackCounts.get(key) || 0) + 1);
+    }
+  }
+  for (const count of blackAttackCounts.values()) {
+    if (count >= 2) {
+      blackScore += 60;
+      break;
+    }
+  }
 
   return whiteScore - blackScore;
 }
 
 /**
- * Convert Minimax evaluation score into winning probability percentage (0% to 100% White)
- * Score scale: 0 = 50%, +100 = ~64%, +200 = ~76%, +400 = ~91%, >= 90000 = 100%
+ * Specialized Endgame Evaluation (Used when total pieces <= 6):
+ * - King vs King: +500 if opponent king is trapped on edge
+ * - King + Man vs King: +800 forced win, prioritize promotion
+ * - Man vs Man: +100 for opposition / proximity to promotion
  */
+export function evaluateEndgame(board: Board, rules: VariantRules = VARIANTS.moroccan): number {
+  let whiteKings = 0;
+  let blackKings = 0;
+  let whiteMen: Position[] = [];
+  let blackMen: Position[] = [];
+  let whiteKingPos: Position[] = [];
+  let blackKingPos: Position[] = [];
+
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (p === 1) whiteMen.push({ r, c });
+      else if (p === 2) {
+        whiteKings++;
+        whiteKingPos.push({ r, c });
+      } else if (p === -1) blackMen.push({ r, c });
+      else if (p === -2) {
+        blackKings++;
+        blackKingPos.push({ r, c });
+      }
+    }
+  }
+
+  const whiteTotal = whiteKings + whiteMen.length;
+  const blackTotal = blackKings + blackMen.length;
+
+  if (whiteTotal > 0 && blackTotal === 0) return 100000;
+  if (blackTotal > 0 && whiteTotal === 0) return -100000;
+
+  const whiteMoves = getAllMoves(board, 1, rules);
+  if (whiteMoves.length === 0) return -100000;
+  const blackMoves = getAllMoves(board, -1, rules);
+  if (blackMoves.length === 0) return 100000;
+
+  let score = (whiteKings * 350 + whiteMen.length * 100) - (blackKings * 350 + blackMen.length * 100);
+
+  // 1. King vs King
+  if (whiteKings === 1 && whiteMen.length === 0 && blackKings === 1 && blackMen.length === 0) {
+    const bk = blackKingPos[0];
+    const wk = whiteKingPos[0];
+    const bkOnEdge = bk.r === 0 || bk.r === 7 || bk.c === 0 || bk.c === 7;
+    const wkOnEdge = wk.r === 0 || wk.r === 7 || wk.c === 0 || wk.c === 7;
+    if (bkOnEdge && !wkOnEdge) score += 500;
+    else if (wkOnEdge && !bkOnEdge) score -= 500;
+  }
+
+  // 2. King + Man vs King (+800 forced win, prioritize promotion)
+  if (whiteKings >= 1 && whiteMen.length >= 1 && blackKings === 1 && blackMen.length === 0) {
+    score += 800;
+    // Push man towards row 0
+    for (const m of whiteMen) {
+      score += (7 - m.r) * 40;
+    }
+  } else if (blackKings >= 1 && blackMen.length >= 1 && whiteKings === 1 && whiteMen.length === 0) {
+    score -= 800;
+    // Push man towards row 7
+    for (const m of blackMen) {
+      score -= m.r * 40;
+    }
+  }
+
+  // 3. Man vs Man endgame (+100 for opposition / proximity to promotion)
+  if (whiteKings === 0 && blackKings === 0 && whiteMen.length > 0 && blackMen.length > 0) {
+    const closestWhite = Math.min(...whiteMen.map(m => m.r)); // closer to row 0
+    const closestBlack = Math.max(...blackMen.map(m => 7 - m.r)); // closer to row 7
+    if (closestWhite < closestBlack) score += 100;
+    else if (closestBlack < closestWhite) score -= 100;
+  }
+
+  return score;
+}
+
+// =========================================================================
+// 5. QUIESCENCE SEARCH
+// =========================================================================
+export let nodesSearched = 0;
+
+export function resetNodesSearched() {
+  nodesSearched = 0;
+}
+
+export function quiescence(
+  board: Board,
+  alpha: number,
+  beta: number,
+  maximizing: boolean,
+  rules: VariantRules,
+  ply: number,
+  stats: { nodes: number; endTime: number }
+): number {
+  nodesSearched++;
+  stats.nodes = nodesSearched;
+
+  const standPat = evaluateBoard(board, rules);
+
+  if (maximizing) {
+    if (standPat >= beta) return beta;
+    if (standPat > alpha) alpha = standPat;
+  } else {
+    if (standPat <= alpha) return alpha;
+    if (standPat < beta) beta = standPat;
+  }
+
+  if (ply >= 24 || (nodesSearched & 255) === 0 && Date.now() >= stats.endTime) {
+    return standPat;
+  }
+
+  const player = maximizing ? 1 : -1;
+  const allMoves = getAllMoves(board, player, rules);
+  const captures = allMoves.filter(m => m.captured.length > 0);
+
+  if (captures.length === 0) {
+    return standPat;
+  }
+
+  captures.sort((a, b) => b.captured.length - a.captured.length);
+
+  if (maximizing) {
+    for (const move of captures) {
+      const score = quiescence(move.finalBoard, alpha, beta, false, rules, ply + 1, stats);
+      if (score >= beta) return beta;
+      if (score > alpha) alpha = score;
+    }
+    return alpha;
+  } else {
+    for (const move of captures) {
+      const score = quiescence(move.finalBoard, alpha, beta, true, rules, ply + 1, stats);
+      if (score <= alpha) return alpha;
+      if (score < beta) beta = score;
+    }
+    return beta;
+  }
+}
+
+// =========================================================================
+// 1. ADVANCED PVS + LMR + NULL MOVE PRUNING MINIMAX
+// =========================================================================
+export function minimax(
+  board: Board,
+  depth: number,
+  alpha: number,
+  beta: number,
+  maximizing: boolean,
+  rules: VariantRules = VARIANTS.moroccan,
+  ply: number = 0,
+  stats: { nodes: number; endTime: number } = { nodes: 0, endTime: Date.now() + 1500 },
+  allowNull: boolean = true
+): { score: number; bestMove: Move | null } {
+  nodesSearched++;
+  stats.nodes = nodesSearched;
+
+  const player = maximizing ? 1 : -1;
+  const hash = computeZobrist(board, player as 1 | -1);
+  const ttIdx = (hash ^ (hash >>> 16)) & TT_MASK;
+
+  // Transposition Table Lookup
+  if (ttKey[ttIdx] === hash && ttFlag[ttIdx] !== 0 && ttDepth[ttIdx] >= depth) {
+    const flag = ttFlag[ttIdx];
+    const score = ttScore[ttIdx];
+    if (flag === 1) return { score, bestMove: ttBestMove[ttIdx] };
+    if (flag === 2 && score >= beta) return { score, bestMove: ttBestMove[ttIdx] };
+    if (flag === 3 && score <= alpha) return { score, bestMove: ttBestMove[ttIdx] };
+  }
+
+  const legalMoves = getAllMoves(board, player, rules);
+
+  if (legalMoves.length === 0) {
+    const loseScore = maximizing ? -100000 + ply : 100000 - ply;
+    return { score: loseScore, bestMove: null };
+  }
+
+  // Quiescence Search at depth == 0
+  if (depth <= 0) {
+    const qScore = quiescence(board, alpha, beta, maximizing, rules, ply, stats);
+    return { score: qScore, bestMove: null };
+  }
+
+  if ((nodesSearched & 255) === 0 && Date.now() >= stats.endTime) {
+    return { score: evaluateBoard(board, rules), bestMove: null };
+  }
+
+  // Null Move Pruning (depth >= 3, not in capture, not in late endgame)
+  const isCaptureAvailable = legalMoves[0].captured.length > 0;
+  if (allowNull && depth >= 3 && !isCaptureAvailable && ply > 0) {
+    let piecesCount = 0;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (board[r][c] !== 0) piecesCount++;
+      }
+    }
+    if (piecesCount > 6) {
+      const R = 2; // Null move reduction
+      const nullResult = minimax(
+        board,
+        depth - 1 - R,
+        maximizing ? -beta : alpha,
+        maximizing ? -alpha : beta,
+        !maximizing,
+        rules,
+        ply + 1,
+        stats,
+        false
+      );
+      if (maximizing && nullResult.score >= beta) return { score: beta, bestMove: null };
+      if (!maximizing && nullResult.score <= alpha) return { score: alpha, bestMove: null };
+    }
+  }
+
+  // Move Ordering: TT Best Move -> Captures -> Killers -> History -> Center
+  const cachedMove = ttKey[ttIdx] === hash ? ttBestMove[ttIdx] : null;
+  const k1 = ply < 40 ? killerMoves[ply][0] : null;
+  const k2 = ply < 40 ? killerMoves[ply][1] : null;
+
+  legalMoves.sort((a, b) => {
+    if (cachedMove && a.id === cachedMove.id) return -1000000;
+    if (cachedMove && b.id === cachedMove.id) return 1000000;
+
+    if (b.captured.length !== a.captured.length) return b.captured.length - a.captured.length;
+    if (b.isPromotion !== a.isPromotion) return b.isPromotion ? 1 : -1;
+
+    if (k1 && a.id === k1.id) return -500000;
+    if (k1 && b.id === k1.id) return 500000;
+    if (k2 && a.id === k2.id) return -250000;
+    if (k2 && b.id === k2.id) return 250000;
+
+    const histA = historyTable[(a.from.r * 8 + a.from.c) * 64 + (a.to.r * 8 + a.to.c)];
+    const histB = historyTable[(b.from.r * 8 + b.from.c) * 64 + (b.to.r * 8 + b.to.c)];
+    return histB - histA;
+  });
+
+  let bestMove: Move | null = legalMoves[0];
+  const originalAlpha = alpha;
+
+  if (maximizing) {
+    let maxEval = -Infinity;
+
+    for (let i = 0; i < legalMoves.length; i++) {
+      const move = legalMoves[i];
+      const isCapture = move.captured.length > 0;
+      let score: number;
+
+      if (i === 0) {
+        // PV Search: Full window on first move
+        const nextDepth = (isCapture && depth > 0) ? depth : depth - 1;
+        const res = minimax(move.finalBoard, nextDepth, alpha, beta, false, rules, ply + 1, stats, true);
+        score = res.score;
+      } else {
+        // LMR: Late Move Reduction for quiet moves after 4th move
+        let searchDepth = (isCapture && depth > 0) ? depth : depth - 1;
+        const canLMR = i >= 4 && depth >= 3 && !isCapture && !move.isPromotion;
+        if (canLMR) {
+          searchDepth = Math.max(1, depth - 2);
+        }
+
+        // Scout search with null window [alpha, alpha + 1]
+        const scout = minimax(move.finalBoard, searchDepth, alpha, alpha + 1, false, rules, ply + 1, stats, true);
+        score = scout.score;
+
+        // Re-search at full depth if scout failed high
+        if (score > alpha && (canLMR || score < beta)) {
+          const fullDepth = (isCapture && depth > 0) ? depth : depth - 1;
+          const fullSearch = minimax(move.finalBoard, fullDepth, alpha, beta, false, rules, ply + 1, stats, true);
+          score = fullSearch.score;
+        }
+      }
+
+      if (score > maxEval) {
+        maxEval = score;
+        bestMove = move;
+      }
+      alpha = Math.max(alpha, score);
+      if (beta <= alpha) {
+        if (!isCapture) updateKillerAndHistory(move, ply, depth);
+        break;
+      }
+    }
+
+    // Save in Transposition Table
+    let flag: number = 1; // EXACT
+    if (maxEval <= originalAlpha) flag = 3; // UPPER
+    else if (maxEval >= beta) flag = 2; // LOWER
+
+    ttKey[ttIdx] = hash;
+    ttDepth[ttIdx] = depth;
+    ttScore[ttIdx] = maxEval;
+    ttFlag[ttIdx] = flag;
+    ttBestMove[ttIdx] = bestMove;
+
+    return { score: maxEval, bestMove };
+  } else {
+    let minEval = Infinity;
+
+    for (let i = 0; i < legalMoves.length; i++) {
+      const move = legalMoves[i];
+      const isCapture = move.captured.length > 0;
+      let score: number;
+
+      if (i === 0) {
+        const nextDepth = (isCapture && depth > 0) ? depth : depth - 1;
+        const res = minimax(move.finalBoard, nextDepth, alpha, beta, true, rules, ply + 1, stats, true);
+        score = res.score;
+      } else {
+        let searchDepth = (isCapture && depth > 0) ? depth : depth - 1;
+        const canLMR = i >= 4 && depth >= 3 && !isCapture && !move.isPromotion;
+        if (canLMR) {
+          searchDepth = Math.max(1, depth - 2);
+        }
+
+        const scout = minimax(move.finalBoard, searchDepth, beta - 1, beta, true, rules, ply + 1, stats, true);
+        score = scout.score;
+
+        if (score < beta && (canLMR || score > alpha)) {
+          const fullDepth = (isCapture && depth > 0) ? depth : depth - 1;
+          const fullSearch = minimax(move.finalBoard, fullDepth, alpha, beta, true, rules, ply + 1, stats, true);
+          score = fullSearch.score;
+        }
+      }
+
+      if (score < minEval) {
+        minEval = score;
+        bestMove = move;
+      }
+      beta = Math.min(beta, score);
+      if (beta <= alpha) {
+        if (!isCapture) updateKillerAndHistory(move, ply, depth);
+        break;
+      }
+    }
+
+    let flag: number = 1;
+    if (minEval <= originalAlpha) flag = 3;
+    else if (minEval >= beta) flag = 2;
+
+    ttKey[ttIdx] = hash;
+    ttDepth[ttIdx] = depth;
+    ttScore[ttIdx] = minEval;
+    ttFlag[ttIdx] = flag;
+    ttBestMove[ttIdx] = bestMove;
+
+    return { score: minEval, bestMove };
+  }
+}
+
+// =========================================================================
+// 3. ENDGAME SOLVER (solveEndgame: Pieces <= 6, Depth 20)
+// =========================================================================
+export function solveEndgame(
+  board: Board,
+  player: 1 | -1,
+  rules: VariantRules = VARIANTS.moroccan,
+  depth: number = 20,
+  timeLimitMs: number = 1500
+): SolverResult {
+  const startTime = performance.now();
+  resetNodesSearched();
+  resetMoveOrdering();
+
+  const allLegalMoves = getAllMoves(board, player, rules);
+  if (allLegalMoves.length === 0) {
+    const loseScore = player === 1 ? -100000 : 100000;
+    return {
+      bestMove: null,
+      evaluation: loseScore,
+      allLegalMoves: [],
+      stats: {
+        nodesEvaluated: 1,
+        timeMs: 1,
+        depthReached: depth,
+        totalPossibilities: 0,
+        evalScore: loseScore,
+        isWinning: false,
+        isLosing: true,
+        isEndgameTablebase: true,
+      },
+    };
+  }
+
+  const endTime = Date.now() + timeLimitMs;
+  const stats = { nodes: 0, endTime };
+
+  // Iterative deepening with endgame evaluation
+  let bestMove: Move = allLegalMoves[0];
+  let bestScore = player === 1 ? -Infinity : Infinity;
+  let depthReached = 1;
+
+  for (let d = 1; d <= depth; d++) {
+    if (Date.now() >= endTime) break;
+
+    let dBestMove = allLegalMoves[0];
+    let dBestScore = player === 1 ? -Infinity : Infinity;
+
+    for (const move of allLegalMoves) {
+      const { score } = minimax(
+        move.finalBoard,
+        d - 1,
+        -Infinity,
+        Infinity,
+        player === -1,
+        rules,
+        0,
+        stats
+      );
+
+      move.score = score;
+      if (player === 1) {
+        if (score > dBestScore) {
+          dBestScore = score;
+          dBestMove = move;
+        }
+      } else {
+        if (score < dBestScore) {
+          dBestScore = score;
+          dBestMove = move;
+        }
+      }
+    }
+
+    depthReached = d;
+    bestMove = dBestMove;
+    bestScore = dBestScore;
+
+    // Fast terminal exit for forced endgame win
+    if (Math.abs(bestScore) >= 90000) break;
+  }
+
+  return {
+    bestMove,
+    evaluation: bestScore,
+    allLegalMoves,
+    stats: {
+      nodesEvaluated: nodesSearched,
+      timeMs: Math.round(performance.now() - startTime),
+      depthReached,
+      totalPossibilities: allLegalMoves.length,
+      evalScore: bestScore,
+      isWinning: player === 1 ? bestScore > 300 : bestScore < -300,
+      isLosing: player === 1 ? bestScore < -300 : bestScore > 300,
+      isEndgameTablebase: true,
+    },
+  };
+}
+
+// =========================================================================
+// 6. ITERATIVE DEEPENING + ASPIRATION WINDOWS + DIFFICULTY CONTROLLER
+// =========================================================================
+export function solvePosition(
+  board: Board,
+  player: 1 | -1,
+  depth: number = 11,
+  rules: VariantRules = VARIANTS.moroccan,
+  timeLimitMs: number = 1500,
+  difficulty: EngineDifficulty = 'IMPOSSIBLE'
+): SolverResult {
+  const startTime = performance.now();
+
+  // 1. Check OPENING BOOK first (Play instantly from book)
+  if (difficulty !== 'MEDIUM') {
+    const bookMoveNotation = probeOpeningBook(board, player);
+    if (bookMoveNotation) {
+      const allLegalMoves = getAllMoves(board, player, rules);
+      const bookMove = allLegalMoves.find(m => m.notation === bookMoveNotation) || allLegalMoves[0];
+      if (bookMove) {
+        return {
+          bestMove: bookMove,
+          evaluation: 0,
+          allLegalMoves,
+          stats: {
+            nodesEvaluated: 1,
+            timeMs: 1,
+            depthReached: 1,
+            totalPossibilities: allLegalMoves.length,
+            evalScore: 0,
+            isWinning: false,
+            isLosing: false,
+            isBookMove: true,
+          },
+        };
+      }
+    }
+  }
+
+  // 2. Check ENDGAME SOLVER (Pieces <= 6)
+  let totalPieces = 0;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (board[r][c] !== 0) totalPieces++;
+    }
+  }
+  if (totalPieces <= 6 && difficulty === 'IMPOSSIBLE') {
+    return solveEndgame(board, player, rules, 20, timeLimitMs);
+  }
+
+  // 3. Difficulty Target Depth setup
+  const targetDepth =
+    difficulty === 'IMPOSSIBLE' ? Math.max(depth, 11) : difficulty === 'HARD' ? Math.max(depth, 9) : Math.max(depth, 6);
+
+  resetNodesSearched();
+  resetMoveOrdering();
+
+  const allLegalMoves = getAllMoves(board, player, rules);
+  const totalPossibilities = countTotalPossibilities(board, player, rules);
+
+  if (allLegalMoves.length === 0) {
+    const loseScore = player === 1 ? -100000 : 100000;
+    return {
+      bestMove: null,
+      evaluation: loseScore,
+      allLegalMoves: [],
+      stats: {
+        nodesEvaluated: 1,
+        timeMs: Math.max(1, performance.now() - startTime),
+        depthReached: 1,
+        totalPossibilities: 0,
+        evalScore: loseScore,
+        isWinning: false,
+        isLosing: true,
+      },
+    };
+  }
+
+  const endTime = Date.now() + Math.max(500, timeLimitMs);
+  const stats = { nodes: 0, endTime };
+
+  let bestMove: Move = allLegalMoves[0];
+  let bestScore = player === 1 ? -Infinity : Infinity;
+  let highestCompletedDepth = 1;
+  let scoredMoves: Move[] = [...allLegalMoves];
+
+  // Iterative Deepening 1 -> targetDepth with ASPIRATION WINDOWS for depth >= 5
+  for (let currentDepth = 1; currentDepth <= targetDepth; currentDepth++) {
+    if (Date.now() >= endTime && currentDepth > 2) break;
+
+    let alpha = -Infinity;
+    let beta = Infinity;
+
+    // Aspiration Windows: alpha = prevScore - 50, beta = prevScore + 50
+    if (currentDepth >= 5 && Math.abs(bestScore) < 90000) {
+      alpha = bestScore - 50;
+      beta = bestScore + 50;
+    }
+
+    let iterBestMove = allLegalMoves[0];
+    let iterBestScore = player === 1 ? -Infinity : Infinity;
+    const currentScoredMoves: Move[] = [];
+    let completedFullIteration = true;
+
+    for (const move of allLegalMoves) {
+      if (Date.now() >= endTime && currentDepth > 2) {
+        completedFullIteration = false;
+        break;
+      }
+
+      const isCapture = move.captured.length > 0;
+      const nextDepth = (isCapture && currentDepth > 1) ? currentDepth - 1 : currentDepth - 1;
+
+      let { score } = minimax(
+        move.finalBoard,
+        nextDepth,
+        alpha,
+        beta,
+        player === -1,
+        rules,
+        0,
+        stats
+      );
+
+      // Aspiration Window Fail-Low / Fail-High recovery
+      if (score <= alpha) {
+        const recover = minimax(move.finalBoard, nextDepth, -Infinity, beta, player === -1, rules, 0, stats);
+        score = recover.score;
+      } else if (score >= beta) {
+        const recover = minimax(move.finalBoard, nextDepth, alpha, Infinity, player === -1, rules, 0, stats);
+        score = recover.score;
+      }
+
+      move.score = score;
+      currentScoredMoves.push({ ...move, score });
+
+      if (player === 1) {
+        if (score > iterBestScore) {
+          iterBestScore = score;
+          iterBestMove = move;
+        }
+      } else {
+        if (score < iterBestScore) {
+          iterBestScore = score;
+          iterBestMove = move;
+        }
+      }
+    }
+
+    if (completedFullIteration && currentScoredMoves.length === allLegalMoves.length) {
+      highestCompletedDepth = currentDepth;
+      bestMove = iterBestMove;
+      bestScore = iterBestScore;
+      scoredMoves = currentScoredMoves;
+
+      allLegalMoves.sort((a, b) => {
+        const sa = a.score ?? 0;
+        const sb = b.score ?? 0;
+        return player === 1 ? sb - sa : sa - sb;
+      });
+
+      if (Math.abs(bestScore) >= 90000) break;
+    }
+  }
+
+  scoredMoves.sort((a, b) => {
+    const sa = a.score ?? 0;
+    const sb = b.score ?? 0;
+    return player === 1 ? sb - sa : sa - sb;
+  });
+
+  const finalScore = bestScore !== -Infinity && bestScore !== Infinity ? bestScore : evaluateBoard(board, rules);
+  const timeMs = Math.max(1, Math.round(performance.now() - startTime));
+  const nps = Math.round((nodesSearched / timeMs) * 1000);
+
+  return {
+    bestMove: bestMove || scoredMoves[0] || null,
+    evaluation: finalScore,
+    allLegalMoves: scoredMoves,
+    stats: {
+      nodesEvaluated: Math.max(nodesSearched, 1),
+      timeMs,
+      depthReached: highestCompletedDepth,
+      totalPossibilities,
+      evalScore: finalScore,
+      isWinning: player === 1 ? finalScore > 300 : finalScore < -300,
+      isLosing: player === 1 ? finalScore < -300 : finalScore > 300,
+      nps,
+    },
+  };
+}
+
+export function ponderOpponentPossibilities(
+  board: Board,
+  opponentColor: 1 | -1,
+  rules: VariantRules = VARIANTS.moroccan,
+  depth: number = 8,
+  timeLimitMs: number = 1800
+): Map<string, PonderedMoveResult> {
+  const humanMoves = getAllMoves(board, opponentColor, rules);
+  const ponderMap = new Map<string, PonderedMoveResult>();
+  const startTime = Date.now();
+  const endTime = startTime + timeLimitMs;
+
+  for (const hMove of humanMoves) {
+    if (Date.now() >= endTime) break;
+
+    const remainingTime = Math.max(120, (endTime - Date.now()) / Math.max(1, humanMoves.length - ponderMap.size));
+    const engineTurn = (opponentColor === 1 ? -1 : 1) as (1 | -1);
+
+    const solution = solvePosition(hMove.finalBoard, engineTurn, depth, rules, remainingTime, 'HARD');
+
+    ponderMap.set(hMove.notation, {
+      humanMove: hMove,
+      counterMove: solution.bestMove,
+      evaluation: solution.evaluation,
+      score: solution.stats.evalScore,
+      depth: solution.stats.depthReached,
+      nodesEvaluated: solution.stats.nodesEvaluated,
+    });
+  }
+
+  return ponderMap;
+}
+
 export function scoreToWinProbability(score: number): {
   whitePct: number;
   blackPct: number;
@@ -854,7 +1563,6 @@ export function scoreToWinProbability(score: number): {
     };
   }
 
-  // Sigmoid curve tailored for checkers piece values
   const prob = 1 / (1 + Math.pow(10, -score / 340));
   const rawPct = Math.round(prob * 100);
   const whitePct = Math.max(1, Math.min(99, rawPct));
@@ -887,394 +1595,4 @@ export function scoreToWinProbability(score: number): {
     leadPlayer,
     leadDescription,
   };
-}
-
-/** Fast compact board key for Transposition Table */
-function getBoardKey(board: Board, player: number): string {
-  let s = player === 1 ? 'W:' : 'B:';
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      if ((r + c) % 2 === 1) {
-        const p = board[r][c];
-        s += p === 0 ? '.' : p === 1 ? '1' : p === 2 ? '2' : p === -1 ? 'a' : 'b';
-      }
-    }
-  }
-  return s;
-}
-
-// Global Transposition Table cache (capped at 50,000 entries)
-interface TTEntry {
-  depth: number;
-  score: number;
-  flag: 'EXACT' | 'LOWER' | 'UPPER';
-  bestMoveId?: string;
-}
-const transpositionTable = new Map<string, TTEntry>();
-
-export function clearTranspositionTable() {
-  transpositionTable.clear();
-}
-
-/**
- * Quiescence Search:
- * Extends search until a quiet position is reached (no captures pending).
- * Eliminates the horizon effect where the engine blunders into multi-jump recaptures.
- */
-export function quiescence(
-  board: Board,
-  alpha: number,
-  beta: number,
-  maximizing: boolean,
-  rules: VariantRules,
-  stats: { nodes: number; endTime: number },
-  qDepth = 0
-): number {
-  stats.nodes++;
-  const standPat = evaluateBoard(board);
-
-  // Maximum capture extension limit to prevent infinite depth loops
-  if (qDepth >= 8 || (stats.nodes % 64 === 0 && Date.now() >= stats.endTime)) {
-    return standPat;
-  }
-
-  if (maximizing) {
-    if (standPat >= beta) return beta;
-    if (standPat > alpha) alpha = standPat;
-  } else {
-    if (standPat <= alpha) return alpha;
-    if (standPat < beta) beta = standPat;
-  }
-
-  const player = maximizing ? 1 : -1;
-  const allMoves = getAllMoves(board, player, rules);
-  const captures = allMoves.filter(m => m.captured.length > 0);
-
-  if (captures.length === 0) {
-    return standPat;
-  }
-
-  // Sort captures: highest capture count first, then promotions
-  captures.sort((a, b) => {
-    if (b.captured.length !== a.captured.length) return b.captured.length - a.captured.length;
-    if (b.isPromotion !== a.isPromotion) return b.isPromotion ? 1 : -1;
-    return 0;
-  });
-
-  if (maximizing) {
-    for (const move of captures) {
-      const score = quiescence(move.finalBoard, alpha, beta, false, rules, stats, qDepth + 1);
-      if (score >= beta) return beta;
-      if (score > alpha) alpha = score;
-      if (Date.now() >= stats.endTime) break;
-    }
-    return alpha;
-  } else {
-    for (const move of captures) {
-      const score = quiescence(move.finalBoard, alpha, beta, true, rules, stats, qDepth + 1);
-      if (score <= alpha) return alpha;
-      if (score < beta) beta = score;
-      if (Date.now() >= stats.endTime) break;
-    }
-    return beta;
-  }
-}
-
-export let nodesSearched = 0;
-
-export function resetNodesSearched() {
-  nodesSearched = 0;
-}
-
-/**
- * Fix 2: Full Minimax with Alpha-Beta Pruning.
- * - Global nodesSearched++ at the START of every minimax call.
- * - Do NOT decrement depth in the middle of a capture chain.
- * - Alpha starts -Infinity, Beta starts +Infinity. Update correctly. Do NOT break early after 2 moves.
- * - If depth == 0, return evaluateBoard(board), do NOT return WIN/LOSS.
- */
-export function minimax(
-  board: Board,
-  depth: number,
-  alpha: number,
-  beta: number,
-  maximizing: boolean,
-  rules: VariantRules = VARIANTS.moroccan,
-  stats?: { nodes: number; endTime?: number }
-): { score: number; bestMove: Move | null } {
-  // Add global nodesSearched++ at the START of every minimax call
-  nodesSearched++;
-  if (stats) stats.nodes = nodesSearched;
-
-  const player = maximizing ? 1 : -1;
-  const legalMoves = getAllMoves(board, player, rules);
-
-  // Terminal state: No legal moves = player whose turn it is has lost
-  if (legalMoves.length === 0) {
-    const loseScore = maximizing ? -100000 : 100000;
-    return { score: loseScore, bestMove: null };
-  }
-
-  // If depth <= 0, return evaluateBoard(board), do NOT return WIN/LOSS
-  if (depth <= 0) {
-    return { score: evaluateBoard(board, rules), bestMove: null };
-  }
-
-  // Optional safety time cutoff when evaluating massive trees
-  if (stats?.endTime && (nodesSearched & 127) === 0 && Date.now() >= stats.endTime) {
-    return { score: evaluateBoard(board, rules), bestMove: null };
-  }
-
-  // Move ordering: captures first, then promotions, then center control
-  legalMoves.sort((a, b) => {
-    if (b.captured.length !== a.captured.length) {
-      return b.captured.length - a.captured.length;
-    }
-    if (b.isPromotion !== a.isPromotion) {
-      return b.isPromotion ? 1 : -1;
-    }
-    const centerA = Math.abs(3.5 - a.to.r) + Math.abs(3.5 - a.to.c);
-    const centerB = Math.abs(3.5 - b.to.r) + Math.abs(3.5 - b.to.c);
-    return centerA - centerB;
-  });
-
-  let bestMove: Move | null = legalMoves[0];
-
-  if (maximizing) {
-    let maxEval = -Infinity;
-    for (const move of legalMoves) {
-      // Do NOT decrement depth in the middle of a capture chain
-      const isCapture = move.captured.length > 0;
-      const nextDepth = (isCapture && depth > 0) ? depth : depth - 1;
-
-      const { score } = minimax(
-        move.finalBoard,
-        nextDepth,
-        alpha,
-        beta,
-        false,
-        rules,
-        stats
-      );
-
-      if (score > maxEval) {
-        maxEval = score;
-        bestMove = move;
-      }
-      alpha = Math.max(alpha, score);
-      if (beta <= alpha) {
-        break; // Alpha-beta cutoff
-      }
-    }
-    return { score: maxEval, bestMove };
-  } else {
-    let minEval = Infinity;
-    for (const move of legalMoves) {
-      // Do NOT decrement depth in the middle of a capture chain
-      const isCapture = move.captured.length > 0;
-      const nextDepth = (isCapture && depth > 0) ? depth : depth - 1;
-
-      const { score } = minimax(
-        move.finalBoard,
-        nextDepth,
-        alpha,
-        beta,
-        true,
-        rules,
-        stats
-      );
-
-      if (score < minEval) {
-        minEval = score;
-        bestMove = move;
-      }
-      beta = Math.min(beta, score);
-      if (beta <= alpha) {
-        break; // Alpha-beta cutoff
-      }
-    }
-    return { score: minEval, bestMove };
-  }
-}
-
-/**
- * Solve board position completely using Iterative Deepening.
- * Guarantees zero blunders and evaluates full target depth accurately.
- */
-export function solvePosition(
-  board: Board,
-  player: 1 | -1,
-  depth: number,
-  rules: VariantRules = VARIANTS.moroccan,
-  timeLimitMs: number = 1000
-): SolverResult {
-  const startTime = performance.now();
-  resetNodesSearched();
-
-  const allLegalMoves = getAllMoves(board, player, rules);
-  const totalPossibilities = countTotalPossibilities(board, player, rules);
-
-  if (allLegalMoves.length === 0) {
-    const loseScore = player === 1 ? -100000 : 100000;
-    return {
-      bestMove: null,
-      evaluation: loseScore,
-      allLegalMoves: [],
-      stats: {
-        nodesEvaluated: 1,
-        timeMs: Math.max(1, performance.now() - startTime),
-        depthReached: depth,
-        totalPossibilities: 0,
-        evalScore: loseScore,
-        isWinning: false,
-        isLosing: true,
-      },
-    };
-  }
-
-  const targetDepth = Math.max(1, depth);
-  const endTime = Date.now() + Math.max(600, timeLimitMs);
-  const stats = { nodes: 0, endTime };
-
-  let bestMove: Move = allLegalMoves[0];
-  let bestScore = player === 1 ? -Infinity : Infinity;
-  let highestCompletedDepth = 1;
-  let scoredMoves: Move[] = [...allLegalMoves];
-
-  // Iterative Deepening from 1 up to targetDepth
-  for (let currentDepth = 1; currentDepth <= targetDepth; currentDepth++) {
-    let iterBestMove = allLegalMoves[0];
-    let iterBestScore = player === 1 ? -Infinity : Infinity;
-    const currentScoredMoves: Move[] = [];
-    let completedFullIteration = true;
-
-    for (const move of allLegalMoves) {
-      if (Date.now() >= endTime && currentDepth > 1) {
-        completedFullIteration = false;
-        break;
-      }
-
-      const isCapture = move.captured.length > 0;
-      const nextDepth = (isCapture && currentDepth > 1) ? currentDepth - 1 : currentDepth - 1;
-
-      const { score } = minimax(
-        move.finalBoard,
-        nextDepth,
-        -Infinity,
-        Infinity,
-        player === -1,
-        rules,
-        stats
-      );
-
-      move.score = score;
-      currentScoredMoves.push({ ...move, score });
-
-      if (player === 1) {
-        if (score > iterBestScore) {
-          iterBestScore = score;
-          iterBestMove = move;
-        }
-      } else {
-        if (score < iterBestScore) {
-          iterBestScore = score;
-          iterBestMove = move;
-        }
-      }
-    }
-
-    if (completedFullIteration && currentScoredMoves.length === allLegalMoves.length) {
-      highestCompletedDepth = currentDepth;
-      bestMove = iterBestMove;
-      bestScore = iterBestScore;
-      scoredMoves = currentScoredMoves;
-
-      // Re-sort moves for the next iteration: best move first
-      allLegalMoves.sort((a, b) => {
-        const sa = a.score ?? 0;
-        const sb = b.score ?? 0;
-        return player === 1 ? sb - sa : sa - sb;
-      });
-
-      // Decisive win or loss: stop searching
-      if (Math.abs(bestScore) >= 90000) {
-        break;
-      }
-    }
-
-    if (Date.now() >= endTime) break;
-  }
-
-  // Sort final moves
-  scoredMoves.sort((a, b) => {
-    const sa = a.score ?? 0;
-    const sb = b.score ?? 0;
-    return player === 1 ? sb - sa : sa - sb;
-  });
-
-  const finalScore = (bestScore !== -Infinity && bestScore !== Infinity)
-    ? bestScore
-    : evaluateBoard(board, rules);
-
-  const timeMs = Math.round(performance.now() - startTime);
-
-  return {
-    bestMove: bestMove || scoredMoves[0] || null,
-    evaluation: finalScore,
-    allLegalMoves: scoredMoves,
-    stats: {
-      nodesEvaluated: Math.max(nodesSearched, 1),
-      timeMs: Math.max(1, timeMs),
-      depthReached: highestCompletedDepth,
-      totalPossibilities,
-      evalScore: finalScore,
-      isWinning: player === 1 ? finalScore > 300 : finalScore < -300,
-      isLosing: player === 1 ? finalScore < -300 : finalScore > 300,
-    },
-  };
-}
-
-/**
- * Pondering Engine:
- * Analyzes all candidate possibilities for opponent (human) while human is thinking!
- * For each human candidate move, it calculates what the position looks like and
- * pre-computes the engine's optimal response and tactical score.
- */
-export function ponderOpponentPossibilities(
-  board: Board,
-  opponentColor: 1 | -1,
-  rules: VariantRules = VARIANTS.moroccan,
-  depth: number = 8,
-  timeLimitMs: number = 1800
-): Map<string, PonderedMoveResult> {
-  const humanMoves = getAllMoves(board, opponentColor, rules);
-  const ponderMap = new Map<string, PonderedMoveResult>();
-  const startTime = Date.now();
-  const endTime = startTime + timeLimitMs;
-
-  for (const hMove of humanMoves) {
-    if (Date.now() >= endTime) break;
-
-    const remainingTime = Math.max(120, (endTime - Date.now()) / Math.max(1, humanMoves.length - ponderMap.size));
-    const engineTurn = (opponentColor === 1 ? -1 : 1) as (1 | -1);
-
-    const solution = solvePosition(
-      hMove.finalBoard,
-      engineTurn,
-      depth,
-      rules,
-      remainingTime
-    );
-
-    ponderMap.set(hMove.notation, {
-      humanMove: hMove,
-      counterMove: solution.bestMove,
-      evaluation: solution.evaluation,
-      score: solution.stats.evalScore,
-      depth: solution.stats.depthReached,
-      nodesEvaluated: solution.stats.nodesEvaluated,
-    });
-  }
-
-  return ponderMap;
 }

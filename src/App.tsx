@@ -33,7 +33,7 @@ import {
   Activity,
   TrendingUp,
 } from 'lucide-react';
-import { Board, Move, Position, SolverResult, VariantRules, PonderedMoveResult } from './engine/types.ts';
+import { Board, Move, Position, SolverResult, VariantRules, PonderedMoveResult, EngineDifficulty } from './engine/types.ts';
 import {
   VARIANTS,
   PRESETS,
@@ -52,13 +52,15 @@ import {
   scoreToWinProbability,
   ponderOpponentPossibilities,
 } from './engine/engine.ts';
+import { solvePositionAsync } from './engine/engineService.ts';
 
 export default function App() {
   // Game & Board State
   const [board, setBoard] = useState<Board>(createStartingBoard);
   const [turn, setTurn] = useState<1 | -1>(1); // 1 = White, -1 = Black
   const [variantKey, setVariantKey] = useState<string>('moroccan');
-  const [depth, setDepth] = useState<number>(6);
+  const [difficulty, setDifficulty] = useState<EngineDifficulty>('IMPOSSIBLE');
+  const [depth, setDepth] = useState<number>(11); // Depth 11 for IMPOSSIBLE
   const [isFlipped, setIsFlipped] = useState<boolean>(false);
   const [history, setHistory] = useState<{ board: Board; turn: 1 | -1 }[]>([]);
   const [future, setFuture] = useState<{ board: Board; turn: 1 | -1 }[]>([]);
@@ -122,7 +124,7 @@ export default function App() {
 
   // New Game Configuration State
   const [newGameColor, setNewGameColor] = useState<1 | -1>(1);
-  const [newGameDifficulty, setNewGameDifficulty] = useState<number>(5);
+  const [newGameDifficulty, setNewGameDifficulty] = useState<EngineDifficulty>('IMPOSSIBLE');
   const [newGameSetup, setNewGameSetup] = useState<'standard' | 'test'>('standard');
 
   // Huffing ("النفخ" / "Blow the piece") State
@@ -232,16 +234,28 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   }, []);
 
-  // Run Solver Analysis whenever the board, turn, variant or depth changes
+  // Run Solver Analysis whenever the board, turn, variant or depth changes (via Web Worker for 0 lag)
   const runSolver = useCallback(() => {
     setIsEngineThinking(true);
-    const timer = setTimeout(() => {
-      const result = solvePosition(board, turn, depth, activeVariant, 1200);
-      setSolverResult(result);
-      setIsEngineThinking(false);
-    }, 16);
-    return () => clearTimeout(timer);
-  }, [board, turn, depth, activeVariant]);
+    let isCancelled = false;
+    solvePositionAsync(board, turn, depth, activeVariant, 1500, difficulty)
+      .then(result => {
+        if (!isCancelled) {
+          setSolverResult(result);
+          setIsEngineThinking(false);
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          const fallback = solvePosition(board, turn, depth, activeVariant, 1500, difficulty);
+          setSolverResult(fallback);
+          setIsEngineThinking(false);
+        }
+      });
+    return () => {
+      isCancelled = true;
+    };
+  }, [board, turn, depth, activeVariant, difficulty]);
 
   useEffect(() => {
     runSolver();
@@ -371,17 +385,24 @@ export default function App() {
         }, 280);
         return () => clearTimeout(timer);
       } else {
-        // Compute deep response if not yet available
+        // Compute deep grandmaster response via Web Worker
         setIsEngineThinking(true);
-        const timer = setTimeout(() => {
-          const deepSolution = solvePosition(board, turn, depth, activeVariant, 1200);
-          setSolverResult(deepSolution);
-          setIsEngineThinking(false);
-          if (deepSolution.bestMove) {
-            applyMove(deepSolution.bestMove);
-          }
-        }, 100);
-        return () => clearTimeout(timer);
+        solvePositionAsync(board, turn, depth, activeVariant, 1500, difficulty)
+          .then(deepSolution => {
+            setSolverResult(deepSolution);
+            setIsEngineThinking(false);
+            if (deepSolution.bestMove) {
+              applyMove(deepSolution.bestMove);
+            }
+          })
+          .catch(() => {
+            const fallback = solvePosition(board, turn, depth, activeVariant, 1500, difficulty);
+            setSolverResult(fallback);
+            setIsEngineThinking(false);
+            if (fallback.bestMove) {
+              applyMove(fallback.bestMove);
+            }
+          });
       }
     }
   }, [
@@ -397,6 +418,7 @@ export default function App() {
     board,
     activeVariant,
     depth,
+    difficulty,
   ]);
 
   // Legal moves available for current player
@@ -531,7 +553,8 @@ export default function App() {
     setBoard(newB);
     setTurn(1);
     setHumanColor(newGameColor);
-    setDepth(newGameDifficulty);
+    setDifficulty(newGameDifficulty);
+    setDepth(newGameDifficulty === 'IMPOSSIBLE' ? 11 : newGameDifficulty === 'HARD' ? 9 : 6);
     setPlayVsEngine(true);
     setShowIndication(false);
     setHistory([]);
@@ -853,26 +876,44 @@ export default function App() {
             {/* Difficulty selection */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                Engine Difficulty
+                Engine Difficulty Level
               </label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 {[
-                  { depth: 3, label: 'Casual (Depth 3)', color: 'text-emerald-400' },
-                  { depth: 5, label: 'Standard (Depth 5)', color: 'text-sky-400' },
-                  { depth: 7, label: 'Master (Depth 7)', color: 'text-amber-400' },
-                  { depth: 9, label: 'Moroccan Champ (Depth 9)', color: 'text-rose-400' },
+                  {
+                    level: 'IMPOSSIBLE' as EngineDifficulty,
+                    title: '👑 IMPOSSIBLE (Grandmaster · Depth 11)',
+                    desc: '150-line Moroccan Opening Book + Endgame Solver (Depth 20) + PVS + LMR + 1M Zobrist TT + Quiescence. Unbeatable.',
+                    badge: 'bg-rose-500/20 text-rose-300 border-rose-500/50',
+                  },
+                  {
+                    level: 'HARD' as EngineDifficulty,
+                    title: '⚔️ HARD (Master · Depth 9)',
+                    desc: 'Deep tactical foresight with Opening Book & Quiescence search.',
+                    badge: 'bg-amber-500/20 text-amber-300 border-amber-500/50',
+                  },
+                  {
+                    level: 'MEDIUM' as EngineDifficulty,
+                    title: '🛡️ MEDIUM (Casual · Depth 6)',
+                    desc: 'Club-level play with Quiescence search.',
+                    badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
+                  },
                 ].map(d => (
                   <button
-                    key={d.depth}
+                    key={d.level}
                     type="button"
-                    onClick={() => setNewGameDifficulty(d.depth)}
-                    className={`p-2.5 rounded-lg border text-xs font-medium text-left transition-all ${
-                      newGameDifficulty === d.depth
-                        ? 'bg-amber-500/20 border-amber-400 text-amber-200 font-bold'
+                    onClick={() => setNewGameDifficulty(d.level)}
+                    className={`p-2.5 rounded-xl border text-xs font-medium text-left transition-all ${
+                      newGameDifficulty === d.level
+                        ? 'bg-amber-500/20 border-amber-400 text-amber-200 shadow-md ring-1 ring-amber-400/40'
                         : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
                     }`}
                   >
-                    <span className={d.color}>●</span> {d.label}
+                    <div className="font-bold flex items-center justify-between">
+                      <span>{d.title}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${d.badge}`}>{d.level}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 pt-0.5 leading-snug">{d.desc}</div>
                   </button>
                 ))}
               </div>
@@ -975,13 +1016,65 @@ export default function App() {
 
           {/* Quick Header Actions: Clean and focused */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Engine Difficulty Selector */}
+            <div className="flex items-center bg-slate-900 border border-slate-750 rounded-lg p-0.5 text-xs shadow-inner">
+              <button
+                type="button"
+                onClick={() => {
+                  setDifficulty('IMPOSSIBLE');
+                  setDepth(11);
+                  showToast('🔥 Engine set to IMPOSSIBLE (Depth 11 + Book + Endgame)');
+                }}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${
+                  difficulty === 'IMPOSSIBLE'
+                    ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Grandmaster Level (Depth 11, Opening Book & Endgame Solver)"
+              >
+                <span>👑 IMPOSSIBLE</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDifficulty('HARD');
+                  setDepth(9);
+                  showToast('⚔️ Engine set to HARD (Depth 9)');
+                }}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${
+                  difficulty === 'HARD'
+                    ? 'bg-amber-500 text-slate-950 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Master Level (Depth 9)"
+              >
+                <span>⚔️ HARD</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDifficulty('MEDIUM');
+                  setDepth(6);
+                  showToast('🛡️ Engine set to MEDIUM (Depth 6)');
+                }}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${
+                  difficulty === 'MEDIUM'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Club Level (Depth 6)"
+              >
+                <span>🛡️ MEDIUM</span>
+              </button>
+            </div>
+
             <button
               onClick={() => setShowNewGameModal(true)}
               className="px-3.5 py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 flex items-center gap-1.5 shadow-md shadow-amber-950/40 transition-all active:scale-95"
               title="Start a new match against the Moroccan Dama engine"
             >
               <Swords className="w-4 h-4 text-slate-950" />
-              <span>New Game vs Engine</span>
+              <span>New Game</span>
             </button>
             <button
               onClick={() => setShowRulesModal(true)}
@@ -1507,36 +1600,62 @@ export default function App() {
                 />
               </div>
 
-              {/* Pondering / Engine Depth Status Bar */}
-              <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5 px-0.5">
-                {playVsEngine ? (
+              {/* Engine Status / Pondering / Book & Endgame Solver Info */}
+              <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-400 pt-0.5 px-0.5 gap-2">
+                {solverResult?.stats.isBookMove ? (
+                  <div className="flex items-center gap-1.5 text-amber-300 font-medium">
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-[10px] font-bold text-amber-300">
+                      📖 MOROCCAN BOOK
+                    </span>
+                    <span>Opening Line · Instant Grandmaster Response</span>
+                  </div>
+                ) : solverResult?.stats.isEndgameTablebase ? (
+                  <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-bold text-emerald-300">
+                      👑 ENDGAME SOLVER
+                    </span>
+                    <span>Depth 20 · Fully Solved Endgame</span>
+                  </div>
+                ) : playVsEngine ? (
                   turn === humanColor ? (
                     <div className="flex items-center gap-2 text-amber-300 font-medium">
                       <Brain className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
                       <span>
                         {ponderProgress.isPondering
-                          ? `Pondering: Evaluated ${ponderProgress.done}/${ponderProgress.total} your possible replies...`
-                          : `Pondered all ${ponderProgress.total} counter-moves (Depth ${Math.max(depth, 8)})`}
+                          ? `Pondering: Evaluated ${ponderProgress.done}/${ponderProgress.total} counter-moves...`
+                          : `Pondered all ${ponderProgress.total} moves (${difficulty} D${depth})`}
                       </span>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 text-sky-400 font-medium">
                       <Activity className="w-3.5 h-3.5 animate-spin" />
-                      <span>Engine calculating grandmaster counter-strategy...</span>
+                      <span>Engine calculating ({difficulty} · Depth {depth} Web Worker)...</span>
                     </div>
                   )
                 ) : (
                   <div className="flex items-center gap-2 text-slate-400">
                     <Gauge className="w-3.5 h-3.5 text-amber-400" />
                     <span>
-                      Depth {solverResult?.stats.depthReached ?? depth} · {solverResult?.stats.nodesEvaluated.toLocaleString() ?? 0} positions searched
+                      Depth {solverResult?.stats.depthReached ?? depth} ({difficulty}) · {(solverResult?.stats.nodesEvaluated ?? 0).toLocaleString()} positions searched
+                      {solverResult?.stats.nps ? ` (${Math.round(solverResult.stats.nps / 1000)}k nps)` : ''}
                     </span>
                   </div>
                 )}
 
-                <span className="font-mono text-[10px] text-slate-500">
-                  {solverResult?.stats.timeMs ?? 0}ms
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-slate-400">
+                    {solverResult?.stats.timeMs ?? 0}ms
+                  </span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                    difficulty === 'IMPOSSIBLE'
+                      ? 'bg-rose-950/70 border-rose-500/50 text-rose-300'
+                      : difficulty === 'HARD'
+                      ? 'bg-amber-950/70 border-amber-500/50 text-amber-300'
+                      : 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                  }`}>
+                    {difficulty}
+                  </span>
+                </div>
               </div>
             </div>
 

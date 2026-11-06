@@ -35,6 +35,8 @@ export interface VariantRules {
   kingQualityTiebreak: boolean; // Spanish rule: prefer capturing kings over men if quantity is tied
 }
 
+export type EngineDifficulty = 'IMPOSSIBLE' | 'HARD' | 'MEDIUM';
+
 export interface EngineStats {
   nodesEvaluated: number;
   timeMs: number;
@@ -44,6 +46,9 @@ export interface EngineStats {
   isWinning: boolean;
   isLosing: boolean;
   mateIn?: number;
+  isBookMove?: boolean;
+  isEndgameTablebase?: boolean;
+  nps?: number; // Nodes per second
 }
 
 export interface SolverResult {

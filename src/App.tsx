@@ -55,7 +55,7 @@ import {
 
 export default function App() {
   // Game & Board State
-  const [board, setBoard] = useState<Board>(createTestPosition);
+  const [board, setBoard] = useState<Board>(createStartingBoard);
   const [turn, setTurn] = useState<1 | -1>(1); // 1 = White, -1 = Black
   const [variantKey, setVariantKey] = useState<string>('moroccan');
   const [depth, setDepth] = useState<number>(6);
@@ -236,7 +236,7 @@ export default function App() {
   const runSolver = useCallback(() => {
     setIsEngineThinking(true);
     const timer = setTimeout(() => {
-      const result = solvePosition(board, turn, Math.max(depth, 8), activeVariant, 350);
+      const result = solvePosition(board, turn, depth, activeVariant, 1200);
       setSolverResult(result);
       setIsEngineThinking(false);
     }, 16);
@@ -281,9 +281,9 @@ export default function App() {
       const solution = solvePosition(
         hMove.finalBoard,
         engineTurn,
-        Math.max(depth, 8),
+        depth,
         activeVariant,
-        250
+        400
       );
 
       if (!isCancelled) {
@@ -374,7 +374,7 @@ export default function App() {
         // Compute deep response if not yet available
         setIsEngineThinking(true);
         const timer = setTimeout(() => {
-          const deepSolution = solvePosition(board, turn, Math.max(depth, 8), activeVariant, 650);
+          const deepSolution = solvePosition(board, turn, depth, activeVariant, 1200);
           setSolverResult(deepSolution);
           setIsEngineThinking(false);
           if (deepSolution.bestMove) {

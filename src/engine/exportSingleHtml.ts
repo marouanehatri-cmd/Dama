@@ -444,7 +444,7 @@ export function generateSingleHtml(): string {
     }
 
     function DamaApp() {
-      const [board, setBoard] = useState(createTestPosition);
+      const [board, setBoard] = useState(createStartingBoard);
       const [turn, setTurn] = useState(1);
       const [variant, setVariant] = useState('moroccan');
       const [depth, setDepth] = useState(6);

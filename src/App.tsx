@@ -28,8 +28,12 @@ import {
   Wind,
   AlertCircle,
   Lightbulb,
+  Brain,
+  Gauge,
+  Activity,
+  TrendingUp,
 } from 'lucide-react';
-import { Board, Move, Position, SolverResult, VariantRules } from './engine/types.ts';
+import { Board, Move, Position, SolverResult, VariantRules, PonderedMoveResult } from './engine/types.ts';
 import {
   VARIANTS,
   PRESETS,
@@ -45,6 +49,8 @@ import {
   solvePosition,
   countTotalPossibilities,
   getPiecesWithAvailableCaptures,
+  scoreToWinProbability,
+  ponderOpponentPossibilities,
 } from './engine/engine.ts';
 
 export default function App() {
@@ -135,6 +141,23 @@ export default function App() {
   // Indication State (when playing vs engine, hint is hidden until user clicks Indication)
   const [showIndication, setShowIndication] = useState<boolean>(false);
 
+  // Pondering Engine State: pre-computes counter-moves for all opponent possibilities while user thinks
+  const ponderCacheRef = useRef<Map<string, PonderedMoveResult>>(new Map());
+  const [ponderProgress, setPonderProgress] = useState<{
+    isPondering: boolean;
+    total: number;
+    done: number;
+  }>({
+    isPondering: false,
+    total: 0,
+    done: 0,
+  });
+
+  // Winning probability and advantage analysis derived from engine evaluation
+  const winProb = useMemo(() => {
+    return scoreToWinProbability(solverResult?.evaluation ?? 0);
+  }, [solverResult?.evaluation]);
+
   // Fast Animation States for Move Glide & Capture Pops
   const [animatingPiece, setAnimatingPiece] = useState<{
     piece: number;
@@ -209,11 +232,11 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   }, []);
 
-  // Run Solver Analysis whenever the board, turn, variant or depth changes (optimized for instant UI)
+  // Run Solver Analysis whenever the board, turn, variant or depth changes
   const runSolver = useCallback(() => {
     setIsEngineThinking(true);
     const timer = setTimeout(() => {
-      const result = solvePosition(board, turn, depth, activeVariant, 120);
+      const result = solvePosition(board, turn, Math.max(depth, 8), activeVariant, 350);
       setSolverResult(result);
       setIsEngineThinking(false);
     }, 16);
@@ -223,6 +246,74 @@ export default function App() {
   useEffect(() => {
     runSolver();
   }, [runSolver]);
+
+  // Active Background Pondering: Pre-computes all possibilities for human moves while human thinks
+  useEffect(() => {
+    if (!playVsEngine || turn !== humanColor || isEngineThinking || animatingPiece) {
+      return;
+    }
+
+    const humanMoves = getAllMoves(board, humanColor, activeVariant);
+    if (humanMoves.length === 0) return;
+
+    setPonderProgress({
+      isPondering: true,
+      total: humanMoves.length,
+      done: 0,
+    });
+
+    ponderCacheRef.current.clear();
+    let isCancelled = false;
+    let idx = 0;
+
+    const ponderNext = () => {
+      if (isCancelled || idx >= humanMoves.length) {
+        if (!isCancelled) {
+          setPonderProgress(prev => ({ ...prev, isPondering: false, done: humanMoves.length }));
+        }
+        return;
+      }
+
+      const hMove = humanMoves[idx];
+      const engineTurn = (humanColor === 1 ? -1 : 1) as (1 | -1);
+
+      // Solve engine's optimal counter-response for this candidate human move
+      const solution = solvePosition(
+        hMove.finalBoard,
+        engineTurn,
+        Math.max(depth, 8),
+        activeVariant,
+        250
+      );
+
+      if (!isCancelled) {
+        ponderCacheRef.current.set(hMove.notation, {
+          humanMove: hMove,
+          counterMove: solution.bestMove,
+          evaluation: solution.evaluation,
+          score: solution.stats.evalScore,
+          depth: solution.stats.depthReached,
+          nodesEvaluated: solution.stats.nodesEvaluated,
+        });
+
+        idx++;
+        setPonderProgress({
+          isPondering: true,
+          total: humanMoves.length,
+          done: idx,
+        });
+
+        setTimeout(ponderNext, 20);
+      }
+    };
+
+    const initialTimer = setTimeout(ponderNext, 80);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(initialTimer);
+    };
+  }, [playVsEngine, turn, humanColor, board, activeVariant, depth, isEngineThinking, animatingPiece]);
 
   // Huffing Handlers ("النفخ") with smooth puff animation
   const handleHuffPiece = useCallback(
@@ -247,7 +338,7 @@ export default function App() {
     setHuffState(null);
   }, []);
 
-  // Handle Play vs Engine responses & Engine Huffing (Fast 120ms response delay)
+  // Handle Play vs Engine responses & Engine Huffing (with Pondering counter-move retrieval)
   useEffect(() => {
     if (playVsEngine && turn !== humanColor && !isEngineThinking && !animatingPiece) {
       // If Human missed a capture, Engine exercises traditional Huffing right!
@@ -259,14 +350,54 @@ export default function App() {
         return () => clearTimeout(timer);
       }
 
-      if (solverResult?.bestMove) {
+      // Check if this move was pre-calculated during pondering!
+      let counterMoveToPlay: Move | null = null;
+      if (lastMoveMade && ponderCacheRef.current.has(lastMoveMade.notation)) {
+        const pondered = ponderCacheRef.current.get(lastMoveMade.notation);
+        if (pondered && pondered.counterMove) {
+          counterMoveToPlay = pondered.counterMove;
+        }
+      }
+
+      if (counterMoveToPlay) {
+        // Pondering Hit! Execute pre-calculated counter-move with grandmaster speed & foresight
+        const timer = setTimeout(() => {
+          applyMove(counterMoveToPlay!);
+        }, 280);
+        return () => clearTimeout(timer);
+      } else if (solverResult?.bestMove) {
         const timer = setTimeout(() => {
           applyMove(solverResult.bestMove!);
-        }, 120); // Snappy, instant response!
+        }, 280);
+        return () => clearTimeout(timer);
+      } else {
+        // Compute deep response if not yet available
+        setIsEngineThinking(true);
+        const timer = setTimeout(() => {
+          const deepSolution = solvePosition(board, turn, Math.max(depth, 8), activeVariant, 650);
+          setSolverResult(deepSolution);
+          setIsEngineThinking(false);
+          if (deepSolution.bestMove) {
+            applyMove(deepSolution.bestMove);
+          }
+        }, 100);
         return () => clearTimeout(timer);
       }
     }
-  }, [playVsEngine, turn, humanColor, isEngineThinking, solverResult, huffState, animatingPiece, handleHuffPiece]);
+  }, [
+    playVsEngine,
+    turn,
+    humanColor,
+    isEngineThinking,
+    solverResult,
+    huffState,
+    animatingPiece,
+    handleHuffPiece,
+    lastMoveMade,
+    board,
+    activeVariant,
+    depth,
+  ]);
 
   // Legal moves available for current player
   const legalMoves = useMemo(() => {
@@ -1308,6 +1439,104 @@ export default function App() {
                     </svg>
                   )}
                 </div>
+              </div>
+            </div>
+
+            {/* DYNAMIC EVALUATION ADVANTAGE BAR (Moves according to who's in better position and has better chances to win) */}
+            <div className="w-full max-w-[500px] bg-[#121622] border border-amber-950/40 rounded-2xl p-3 shadow-xl space-y-2 select-none animate-in fade-in duration-300">
+              {/* Top Row: Win Probabilities & Position Lead Badge */}
+              <div className="flex items-center justify-between text-xs font-semibold">
+                {/* White's Chances */}
+                <div className="flex items-center gap-1.5">
+                  <div className="w-4 h-4 rounded-full bg-amber-100 border border-amber-300 shadow-sm flex items-center justify-center text-[10px] font-bold text-black">
+                    ⚪
+                  </div>
+                  <span className="text-slate-200">
+                    White <span className="font-bold text-amber-300">{winProb.whitePct}%</span>
+                  </span>
+                  {winProb.leadPlayer === 'white' && (
+                    <span className="text-[11px] font-mono text-amber-400 font-bold">
+                      ({winProb.formattedScore})
+                    </span>
+                  )}
+                </div>
+
+                {/* Center Lead Badge */}
+                <div className="flex items-center gap-1">
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border shadow-sm ${
+                      winProb.leadPlayer === 'white'
+                        ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                        : winProb.leadPlayer === 'black'
+                        ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-300'
+                    }`}
+                  >
+                    {winProb.leadDescription}
+                  </span>
+                </div>
+
+                {/* Black's Chances */}
+                <div className="flex items-center gap-1.5">
+                  {winProb.leadPlayer === 'black' && (
+                    <span className="text-[11px] font-mono text-rose-400 font-bold">
+                      ({winProb.formattedScore})
+                    </span>
+                  )}
+                  <span className="text-slate-200">
+                    Black <span className="font-bold text-slate-300">{winProb.blackPct}%</span>
+                  </span>
+                  <div className="w-4 h-4 rounded-full bg-slate-900 border border-slate-600 shadow-sm flex items-center justify-center text-[10px] font-bold text-white">
+                    ⚫
+                  </div>
+                </div>
+              </div>
+
+              {/* The Visual Advantage Bar that slides left/right */}
+              <div className="relative w-full h-4 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 rounded-full border border-slate-700/80 overflow-hidden shadow-inner p-0.5">
+                {/* White Advantage Fill (Slides from Left to Right according to White's Win %) */}
+                <div
+                  className="h-full bg-gradient-to-r from-amber-400 via-amber-200 to-amber-100 rounded-full transition-all duration-700 ease-out shadow-[0_0_12px_rgba(251,191,36,0.5)]"
+                  style={{ width: `${winProb.whitePct}%` }}
+                />
+
+                {/* Moving Center Divider Bead */}
+                <div
+                  className="absolute top-0 bottom-0 w-1.5 bg-amber-400 rounded-full shadow-[0_0_10px_#f59e0b] -translate-x-1/2 transition-all duration-700 ease-out pointer-events-none"
+                  style={{ left: `${winProb.whitePct}%` }}
+                />
+              </div>
+
+              {/* Pondering / Engine Depth Status Bar */}
+              <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5 px-0.5">
+                {playVsEngine ? (
+                  turn === humanColor ? (
+                    <div className="flex items-center gap-2 text-amber-300 font-medium">
+                      <Brain className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                      <span>
+                        {ponderProgress.isPondering
+                          ? `Pondering: Evaluated ${ponderProgress.done}/${ponderProgress.total} your possible replies...`
+                          : `Pondered all ${ponderProgress.total} counter-moves (Depth ${Math.max(depth, 8)})`}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-sky-400 font-medium">
+                      <Activity className="w-3.5 h-3.5 animate-spin" />
+                      <span>Engine calculating grandmaster counter-strategy...</span>
+                    </div>
+                  )
+                ) : (
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Gauge className="w-3.5 h-3.5 text-amber-400" />
+                    <span>
+                      Depth {solverResult?.stats.depthReached ?? depth} · {solverResult?.stats.nodesEvaluated.toLocaleString() ?? 0} positions searched
+                    </span>
+                  </div>
+                )}
+
+                <span className="font-mono text-[10px] text-slate-500">
+                  {solverResult?.stats.timeMs ?? 0}ms
+                </span>
               </div>
             </div>
 

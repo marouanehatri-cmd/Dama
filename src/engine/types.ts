@@ -52,3 +52,12 @@ export interface SolverResult {
   stats: EngineStats;
   allLegalMoves: Move[];
 }
+
+export interface PonderedMoveResult {
+  humanMove: Move;
+  counterMove: Move | null;
+  evaluation: number;
+  score: number;
+  depth: number;
+  nodesEvaluated: number;
+}

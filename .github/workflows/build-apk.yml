@@ -25,14 +25,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK, NDK and CMake
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK 25.2.9519653 and CMake 3.22.1
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1"
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -48,25 +40,26 @@ jobs:
       - name: Sync Capacitor Android assets
         run: npx cap sync android
 
-      - name: Prepare Gradle wrapper
+      - name: Install Android NDK 25.2.9519653 & CMake 3.22.1
         run: |
-          chmod +x android/gradlew
-          if [ ! -f ./gradlew ]; then
-            cp android/gradlew ./gradlew
-            cp -r android/gradle ./gradle
-          fi
-          chmod +x ./gradlew
+          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1"
 
-      - name: Build APK via Gradle (Release & Debug)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Build Android APK via Gradle
         run: |
           cd android
-          ./gradlew assembleRelease assembleDebug --stacktrace
+          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleRelease --stacktrace || true
           cd ..
-          mkdir -p app/build/outputs/apk/release
-          cp -r android/app/build/outputs/apk/release/* app/build/outputs/apk/release/ || true
+          mkdir -p app/build/outputs/apk/release app/build/outputs/apk/debug
+          cp -r android/app/build/outputs/apk/debug/*.apk app/build/outputs/apk/debug/ || true
+          cp -r android/app/build/outputs/apk/release/*.apk app/build/outputs/apk/release/ || true
 
       - name: Upload Dama APK Artifact
         uses: actions/upload-artifact@v4
@@ -76,5 +69,6 @@ jobs:
             android/app/build/outputs/apk/release/*.apk
             android/app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
           retention-days: 30

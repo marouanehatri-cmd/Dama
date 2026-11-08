@@ -14,6 +14,11 @@ import {
   PonderedMoveResult,
 } from './types.ts';
 import { probeOpeningBook, getBoardSignature } from './openingBook.ts';
+import {
+  board2DToBoard64,
+  getBestMove as getBestBitboardMove,
+  bitboardMoveToMove,
+} from './bitboardEngine.ts';
 
 export const VARIANTS: Record<string, VariantRules> = {
   moroccan: {
@@ -1362,7 +1367,37 @@ export function solvePosition(
     return solveEndgame(board, player, rules, 20, timeLimitMs);
   }
 
-  // 3. Difficulty Target Depth setup
+  // 3. Ultra-Fast 64-bit Bitboard Engine for Moroccan Dama (XOR makeMove/undoMove)
+  if (rules.id === 'moroccan') {
+    const targetDepth =
+      difficulty === 'IMPOSSIBLE' ? Math.max(depth, 11) : difficulty === 'HARD' ? Math.max(depth, 9) : Math.max(depth, 6);
+    const board64 = board2DToBoard64(board);
+    const turnVal = player === 1 ? 1 : 2;
+    const bbRes = getBestBitboardMove(board64, turnVal, Math.min(timeLimitMs, 800), targetDepth);
+
+    if (bbRes.bestMove) {
+      const bestMove = bitboardMoveToMove(bbRes.bestMove, board, player === 1);
+      const allLegalMoves = bbRes.allLegalMoves.map(m => bitboardMoveToMove(m, board, player === 1));
+      return {
+        bestMove,
+        evaluation: player === 1 ? bbRes.score : -bbRes.score,
+        allLegalMoves,
+        stats: {
+          nodesEvaluated: bbRes.nodesSearched,
+          timeMs: bbRes.timeMs,
+          depthReached: bbRes.depthReached,
+          totalPossibilities: allLegalMoves.length,
+          evalScore: player === 1 ? bbRes.score : -bbRes.score,
+          isWinning: bbRes.score >= 50000,
+          isLosing: bbRes.score <= -50000,
+          nps: bbRes.nps,
+          isEndgameTablebase: bbRes.isEndgameSolver,
+        },
+      };
+    }
+  }
+
+  // 4. Difficulty Target Depth setup for fallback variants
   const targetDepth =
     difficulty === 'IMPOSSIBLE' ? Math.max(depth, 11) : difficulty === 'HARD' ? Math.max(depth, 9) : Math.max(depth, 6);
 

@@ -6,27 +6,32 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build Type'
-        required: true
-        default: 'debug'
-        type: choice
-        options:
-          - debug
-          - release
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build APK
+    name: Build Dama APK with C++ Engine
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK, NDK and CMake
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 25.2.9519653 and CMake 3.22.1
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -34,49 +39,42 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install Node dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Build web application
+      - name: Build Web Application
         run: npm run build
 
       - name: Sync Capacitor Android assets
         run: npx cap sync android
 
-      - name: Set up Java JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
+      - name: Prepare Gradle wrapper
+        run: |
+          chmod +x android/gradlew
+          if [ ! -f ./gradlew ]; then
+            cp android/gradlew ./gradlew
+            cp -r android/gradle ./gradle
+          fi
+          chmod +x ./gradlew
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Make Gradle wrapper executable
-        run: chmod +x android/gradlew
-
-      - name: Build Android Debug APK
-        if: "${{ github.event.inputs.build_type != 'release' }}"
+      - name: Build APK via Gradle (Release & Debug)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
         run: |
           cd android
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleRelease assembleDebug --stacktrace
           cd ..
-          cp android/app/build/outputs/apk/debug/app-debug.apk dama-master-debug.apk
+          mkdir -p app/build/outputs/apk/release
+          cp -r android/app/build/outputs/apk/release/* app/build/outputs/apk/release/ || true
 
-      - name: Build Android Release (Unsigned) APK
-        if: "${{ github.event.inputs.build_type == 'release' }}"
-        run: |
-          cd android
-          ./gradlew assembleRelease --stacktrace
-          cd ..
-          cp android/app/build/outputs/apk/release/app-release-unsigned.apk dama-master-release.apk
-
-      - name: Upload APK Artifact
+      - name: Upload Dama APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dama-android-apk
+          name: dama-apk
           path: |
-            dama-master-debug.apk
-            dama-master-release.apk
-          if-no-files-found: error
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
           retention-days: 30

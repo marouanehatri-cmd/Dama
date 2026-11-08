@@ -32,6 +32,7 @@ import {
   Gauge,
   Activity,
   TrendingUp,
+  Download,
 } from 'lucide-react';
 import { Board, Move, Position, SolverResult, VariantRules, PonderedMoveResult, EngineDifficulty } from './engine/types.ts';
 import {
@@ -1091,6 +1092,15 @@ export default function App() {
               <RefreshCw className="w-3.5 h-3.5 text-sky-400" />
               <span>Flip Board</span>
             </button>
+            <a
+              href="/dama-master-debug.apk"
+              download="dama-master.apk"
+              className="px-3 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/40 flex items-center gap-1.5 shadow-md shadow-emerald-950/40 transition-all active:scale-95"
+              title="Download Android APK directly"
+            >
+              <Download className="w-3.5 h-3.5 text-white" />
+              <span>Download APK</span>
+            </a>
           </div>
         </header>
 

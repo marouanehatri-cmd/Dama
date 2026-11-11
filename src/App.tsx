@@ -1093,13 +1093,15 @@ export default function App() {
               <span>Flip Board</span>
             </button>
             <a
-              href="/dama-master-debug.apk"
+              href="https://github.com/marouanehatri-cmd/Dama/releases/download/v1.0.0/dama-master.apk"
+              target="_blank"
+              rel="noopener noreferrer"
               download="dama-master.apk"
               className="px-3 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/40 flex items-center gap-1.5 shadow-md shadow-emerald-950/40 transition-all active:scale-95"
-              title="Download Android APK directly"
+              title="Download complete 38.8 MB Android APK directly"
             >
               <Download className="w-3.5 h-3.5 text-white" />
-              <span>Download APK</span>
+              <span>Download APK (38 MB)</span>
             </a>
           </div>
         </header>
